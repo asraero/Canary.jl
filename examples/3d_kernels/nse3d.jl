@@ -74,8 +74,12 @@
 #--------------------------------Markdown Language Header-----------------------
 
 include(joinpath(@__DIR__,"vtk.jl"))
+include(joinpath(@__DIR__,"../../src/mesh.jl"))
+include(joinpath(@__DIR__,"../../src/operators.jl"))
+include(joinpath(@__DIR__,"../../src/metric.jl"))
+include(joinpath(@__DIR__,"../../src/Canary.jl"))
 using MPI
-using Canary
+#using Canary
 using Printf: @sprintf
 const HAVE_CUDA = try
     using CUDAnative
@@ -126,10 +130,58 @@ const _R_gas = 28717 // 100
 const _c_p = 100467 // 100
 const _c_v = 7175 // 10
 const _gravity = 10
-const _Prandtl = 71 // 10
+const _Prandtl = 71 // 100 # Fixed typo in Prandtl number, was 7.1 now is 0.71(ASR)
 const _Stokes = -2 // 3
 # }}}
 
+ # {{{ Collect cleanup functions - ASR 1/10/19                                                                      
+                                                                                                                     
+  # --------ASR --------#                                                                                             
+  function compute_wave_speed(nxM, nyM, nzM, ρMinv, UM, VM, WM, PM, ρPinv, UP, VP, WP, PP, γ)                          
+                                                                                                                        
+          λM = ρMinv * abs(nxM * UM + nyM * VM + nzM * WM) + sqrt(ρMinv * γ * PM)                                        
+          λP = ρPinv * abs(nxM * UP + nyM * VP + nzM * WP) + sqrt(ρPinv * γ * PP)                                         
+          λ  =  max(λM, λP)                                                                                                
+                                                                                                                            
+          return λ                                                                                                           
+  end                                                                                                                         
+                                                                                                                               
+  # --------ASR --------#                                                                                                       
+  function integrate_volume_rhs!(rhs, e, D, Nq, s_F, s_G, s_H)                                                                   
+                                                                                                                                  
+            # loop of ξ-grid lines                                                                                                 
+            for s = 1:_nstate, k = 1:Nq, j = 1:Nq, i = 1:Nq, n = 1:Nq                                                               
+                rhs[i, j, k, s, e] += D[n, i] * s_F[n, j, k, s]                                                                      
+            end                                                                                                                       
+            # loop of η-grid lines                                                                                                     
+            for s = 1:_nstate, k = 1:Nq, j = 1:Nq, i = 1:Nq, n = 1:Nq                                                                   
+                rhs[i, j, k, s, e] += D[n, j] * s_G[i, n, k, s]                                                                          
+            end                                                                                                                           
+            # loop of ζ-grid lines                                                                                                         
+            for s = 1:_nstate, k = 1:Nq, j = 1:Nq, i = 1:Nq, n = 1:Nq                                                                       
+                rhs[i, j, k, s, e] += D[n, k] * s_H[i, j, n, s]                                                                              
+            end                                                                                                                               
+  end                                                                                                                                          
+                                                                                                                                                
+  # --------ASR --------#                                                                                                                        
+  function build_volume_fluxes_ijke(MJ,                                                                                                           
+                                 ξx,fluxQ_x,                                                                                                       
+                                 ξy,fluxQ_y,                                                                                                        
+                                 ξz,fluxQ_z)                                                                                                         
+  	volume_flux = MJ * (ξx * fluxQ_x + ξy * fluxQ_y + ξz * fluxQ_z)                                                                                 
+  	return volume_flux # Note that the last value computed is the one returned by default in Julia
+  end                                                                                                                                                  
+                                                                                                                                                        
+  # ------ ASR --------- #                                                                                                                               
+  function build_surface_fluxes_ijke(nxM, fluxQM_x, fluxQP_x,                                                                                             
+                                  nyM, fluxQM_y, fluxQP_y,                                                                                                 
+                                  nzM, fluxQM_z, fluxQP_z,                                                                                                  
+                                  λ, QM,QP)                                                                                                                  
+                                                                                                                                                              
+  	surface_flux = (nxM * (fluxQM_x + fluxQP_x) + nyM * (fluxQM_y + fluxQP_y) + nzM * (fluxQM_z + fluxQP_z) - λ * (QP -QM)) / 2                              
+  	return surface_flux # Note that the last value computed is the one returned by default in Julia
+  end
+  # }}}
 # {{{ courant
 function courantnumber(::Val{dim}, ::Val{N}, vgeo, Q, mpicomm) where {dim, N}
     DFloat = eltype(Q)
@@ -313,41 +365,33 @@ function volume_rhs!(::Val{dim}, ::Val{N}, rhs::Array, Q, vgeo, D, elems) where 
             fluxW_z = ρinv * W * W + P
             fluxE_z = ρinv * W * (E+P)
 
-            s_F[i, j, k, _ρ] = MJ * (ξx * fluxρ_x + ξy * fluxρ_y + ξz * fluxρ_z)
-            s_F[i, j, k, _U] = MJ * (ξx * fluxU_x + ξy * fluxU_y + ξz * fluxU_z)
-            s_F[i, j, k, _V] = MJ * (ξx * fluxV_x + ξy * fluxV_y + ξz * fluxV_z)
-            s_F[i, j, k, _W] = MJ * (ξx * fluxW_x + ξy * fluxW_y + ξz * fluxW_z)
-            s_F[i, j, k, _E] = MJ * (ξx * fluxE_x + ξy * fluxE_y + ξz * fluxE_z)
+	    #  ---------- ASR -------- #
+            s_F[i, j, k, _ρ] = build_volume_fluxes_ijke(MJ,ξx,fluxρ_x,ξy,fluxρ_y,ξz,fluxρ_z)
+            s_F[i, j, k, _U] = build_volume_fluxes_ijke(MJ,ξx,fluxU_x,ξy,fluxU_y,ξz,fluxU_z)
+            s_F[i, j, k, _V] = build_volume_fluxes_ijke(MJ,ξx,fluxV_x,ξy,fluxV_y,ξz,fluxV_z)
+            s_F[i, j, k, _W] = build_volume_fluxes_ijke(MJ,ξx,fluxW_x,ξy,fluxW_y,ξz,fluxW_z)
+            s_F[i, j, k, _E] = build_volume_fluxes_ijke(MJ,ξx,fluxE_x,ξy,fluxE_y,ξz,fluxE_z)
 
-            s_G[i, j, k, _ρ] = MJ * (ηx * fluxρ_x + ηy * fluxρ_y + ηz * fluxρ_z)
-            s_G[i, j, k, _U] = MJ * (ηx * fluxU_x + ηy * fluxU_y + ηz * fluxU_z)
-            s_G[i, j, k, _V] = MJ * (ηx * fluxV_x + ηy * fluxV_y + ηz * fluxV_z)
-            s_G[i, j, k, _W] = MJ * (ηx * fluxW_x + ηy * fluxW_y + ηz * fluxW_z)
-            s_G[i, j, k, _E] = MJ * (ηx * fluxE_x + ηy * fluxE_y + ηz * fluxE_z)
+            s_G[i, j, k, _ρ] = build_volume_fluxes_ijke(MJ,ηx,fluxρ_x,ηy,fluxρ_y,ηz,fluxρ_z)
+            s_G[i, j, k, _U] = build_volume_fluxes_ijke(MJ,ηx,fluxU_x,ηy,fluxU_y,ηz,fluxU_z)
+            s_G[i, j, k, _V] = build_volume_fluxes_ijke(MJ,ηx,fluxV_x,ηy,fluxV_y,ηz,fluxV_z)
+            s_G[i, j, k, _W] = build_volume_fluxes_ijke(MJ,ηx,fluxW_x,ηy,fluxW_y,ηz,fluxW_z)
+            s_G[i, j, k, _E] = build_volume_fluxes_ijke(MJ,ηx,fluxE_x,ηy,fluxE_y,ηz,fluxE_z)
 
-            s_H[i, j, k, _ρ] = MJ * (ζx * fluxρ_x + ζy * fluxρ_y + ζz * fluxρ_z)
-            s_H[i, j, k, _U] = MJ * (ζx * fluxU_x + ζy * fluxU_y + ζz * fluxU_z)
-            s_H[i, j, k, _V] = MJ * (ζx * fluxV_x + ζy * fluxV_y + ζz * fluxV_z)
-            s_H[i, j, k, _W] = MJ * (ζx * fluxW_x + ζy * fluxW_y + ζz * fluxW_z)
-            s_H[i, j, k, _E] = MJ * (ζx * fluxE_x + ζy * fluxE_y + ζz * fluxE_z)
+            s_H[i, j, k, _ρ] = build_volume_fluxes_ijke(MJ,ζx,fluxρ_x,ζy,fluxρ_y,ζz,fluxρ_z)
+            s_H[i, j, k, _U] = build_volume_fluxes_ijke(MJ,ζx,fluxU_x,ζy,fluxU_y,ζz,fluxU_z)
+            s_H[i, j, k, _V] = build_volume_fluxes_ijke(MJ,ζx,fluxV_x,ζy,fluxV_y,ζz,fluxV_z)
+            s_H[i, j, k, _W] = build_volume_fluxes_ijke(MJ,ζx,fluxW_x,ζy,fluxW_y,ζz,fluxW_z)
+            s_H[i, j, k, _E] = build_volume_fluxes_ijke(MJ,ζx,fluxE_x,ζy,fluxE_y,ζz,fluxE_z)
 
+            # --------- ASR --------- #
             # buoyancy term
             rhs[i, j, k, _W, e] -= MJ * ρ * gravity
         end
-
-        # loop of ξ-grid lines
-        for s = 1:_nstate, k = 1:Nq, j = 1:Nq, i = 1:Nq, n = 1:Nq
-            rhs[i, j, k, s, e] += D[n, i] * s_F[n, j, k, s]
-        end
-        # loop of η-grid lines
-        for s = 1:_nstate, k = 1:Nq, j = 1:Nq, i = 1:Nq, n = 1:Nq
-            rhs[i, j, k, s, e] += D[n, j] * s_G[i, n, k, s]
-        end
-        # loop of ζ-grid lines
-        for s = 1:_nstate, k = 1:Nq, j = 1:Nq, i = 1:Nq, n = 1:Nq
-            rhs[i, j, k, s, e] += D[n, k] * s_H[i, j, n, s]
-        end
-    end
+	    # ASR Commented - DG Integration function in "cleanup" section   
+  	    integrate_volume_rhs!(rhs, e, D, Nq, s_F, s_G, s_H)                                                                   
+                                                                                                                                  
+	end
 end
 
 # flux RHS
@@ -441,22 +485,22 @@ function flux_rhs!(::Val{dim}, ::Val{N}, rhs::Array, Q, sgeo, vgeo, elems, vmapM
                 fluxVP_z = ρPinv * VP * WP
                 fluxWP_z = ρPinv * WP * WP + PP
                 fluxEP_z = ρPinv * WP * (EP+PP)
-
+		# ------ ASR -------- # Hide wavespeed calculation 
                 λM = ρMinv * abs(nxM * UM + nyM * VM + nzM * WM) + sqrt(ρMinv * γ * PM)
                 λP = ρPinv * abs(nxM * UP + nyM * VP + nzM * WP) + sqrt(ρPinv * γ * PP)
-                λ  =  max(λM, λP)
+                λ  = compute_wave_speed(nxM, nyM, nzM, ρMinv, UM, VM, WM, PM, ρPinv, UP, VP, WP, PP, γ)
 
-                #Compute Numerical Flux and Update
-                fluxρS = (nxM * (fluxρM_x + fluxρP_x) + nyM * (fluxρM_y + fluxρP_y) +
-                          nzM * (fluxρM_z + fluxρP_z) - λ * (ρP - ρM)) / 2
-                fluxUS = (nxM * (fluxUM_x + fluxUP_x) + nyM * (fluxUM_y + fluxUP_y) +
-                          nzM * (fluxUM_z + fluxUP_z) - λ * (UP - UM)) / 2
-                fluxVS = (nxM * (fluxVM_x + fluxVP_x) + nyM * (fluxVM_y + fluxVP_y) +
-                          nzM * (fluxVM_z + fluxVP_z) - λ * (VP - VM)) / 2
-                fluxWS = (nxM * (fluxWM_x + fluxWP_x) + nyM * (fluxWM_y + fluxWP_y) +
-                          nzM * (fluxWM_z + fluxWP_z) - λ * (WP - WM)) / 2
-                fluxES = (nxM * (fluxEM_x + fluxEP_x) + nyM * (fluxEM_y + fluxEP_y) +
-                          nzM * (fluxEM_z + fluxEP_z) - λ * (EP - EM)) / 2
+                # ------- ASR --------- #
+
+                # Compute using generic function, the flux integrand
+                fluxρS = build_surface_fluxes_ijke(nxM, fluxρM_x, fluxρP_x, nyM, fluxρM_y, fluxρP_y, nzM, fluxρM_z, fluxρP_z, λ, ρM, ρP)
+                fluxUS = build_surface_fluxes_ijke(nxM, fluxUM_x, fluxUP_x, nyM, fluxUM_y, fluxUP_y, nzM, fluxUM_z, fluxUP_z, λ, UM, UP)
+                fluxVS = build_surface_fluxes_ijke(nxM, fluxVM_x, fluxVP_x, nyM, fluxVM_y, fluxVP_y, nzM, fluxVM_z, fluxVP_z, λ, VM, VP)
+                fluxWS = build_surface_fluxes_ijke(nxM, fluxWM_x, fluxWP_x, nyM, fluxWM_y, fluxWP_y, nzM, fluxWM_z, fluxWP_z, λ, WM, WP)
+                fluxES = build_surface_fluxes_ijke(nxM, fluxEM_x, fluxEP_x, nyM, fluxEM_y, fluxEP_y, nzM, fluxEM_z, fluxEP_z, λ, EM, EP)
+
+                # ------- ASR --------- #
+                    
 
 
                 #Update RHS
@@ -521,23 +565,55 @@ function volume_grad!(::Val{dim}, ::Val{N}, rhs::Array, Q, vgeo, D, elems) where
             fluxW = w
             fluxE = T
 
-            s_F[i, j, k, _ρ, 1], s_F[i, j, k, _ρ, 2], s_F[i, j, k, _ρ, 3] = MJ * (ξx * fluxρ), MJ * (ξy * fluxρ), MJ * (ξz * fluxρ)
-            s_F[i, j, k, _U, 1], s_F[i, j, k, _U, 2], s_F[i, j, k, _U, 3] = MJ * (ξx * fluxU), MJ * (ξy * fluxU), MJ * (ξz * fluxU)
-            s_F[i, j, k, _V, 1], s_F[i, j, k, _V, 2], s_F[i, j, k, _V, 3] = MJ * (ξx * fluxV), MJ * (ξy * fluxV), MJ * (ξz * fluxV)
-            s_F[i, j, k, _W, 1], s_F[i, j, k, _W, 2], s_F[i, j, k, _W, 3] = MJ * (ξx * fluxW), MJ * (ξy * fluxW), MJ * (ξz * fluxW)
-            s_F[i, j, k, _E, 1], s_F[i, j, k, _E, 2], s_F[i, j, k, _E, 3] = MJ * (ξx * fluxE), MJ * (ξy * fluxE), MJ * (ξz * fluxE)
+            s_F[i, j, k, _ρ, 1], s_F[i, j, k, _ρ, 2], s_F[i, j, k, _ρ, 3] = build_volume_fluxes_ijke(MJ,ξx,fluxρ,0.0,0.0,0.0,0.0),
+                                                                            build_volume_fluxes_ijke(MJ,0.0,0.0,ξy,fluxρ,0.0,0.0),
+                                                                            build_volume_fluxes_ijke(MJ,0.0,0.0,0.0,0.0,ξz,fluxρ)
+            s_F[i, j, k, _U, 1], s_F[i, j, k, _U, 2], s_F[i, j, k, _U, 3] = build_volume_fluxes_ijke(MJ,ξx,fluxU,0.0,0.0,0.0,0.0),
+                                                                            build_volume_fluxes_ijke(MJ,0.0,0.0,ξy,fluxU,0.0,0.0),
+                                                                            build_volume_fluxes_ijke(MJ,0.0,0.0,0.0,0.0,ξz,fluxU)
+            s_F[i, j, k, _V, 1], s_F[i, j, k, _V, 2], s_F[i, j, k, _V, 3] = build_volume_fluxes_ijke(MJ,ξx,fluxV,0.0,0.0,0.0,0.0),
+                                                                            build_volume_fluxes_ijke(MJ,0.0,0.0,ξy,fluxV,0.0,0.0),
+                                                                            build_volume_fluxes_ijke(MJ,0.0,0.0,0.0,0.0,ξz,fluxV)
+            s_F[i, j, k, _W, 1], s_F[i, j, k, _W, 2], s_F[i, j, k, _W, 3] = build_volume_fluxes_ijke(MJ,ξx,fluxW,0.0,0.0,0.0,0.0),
+                                                                            build_volume_fluxes_ijke(MJ,0.0,0.0,ξy,fluxW,0.0,0.0),
+                                                                            build_volume_fluxes_ijke(MJ,0.0,0.0,0.0,0.0,ξz,fluxW)
+            s_F[i, j, k, _E, 1], s_F[i, j, k, _E, 2], s_F[i, j, k, _E, 3] = build_volume_fluxes_ijke(MJ,ξx,fluxE,0.0,0.0,0.0,0.0),
+                                                                            build_volume_fluxes_ijke(MJ,0.0,0.0,ξy,fluxE,0.0,0.0),
+                                                                            build_volume_fluxes_ijke(MJ,0.0,0.0,0.0,0.0,ξz,fluxE)
 
-            s_G[i, j, k, _ρ, 1], s_G[i, j, k, _ρ, 2], s_G[i, j, k, _ρ, 3] = MJ * (ηx * fluxρ), MJ * (ηy * fluxρ), MJ * (ηz * fluxρ)
-            s_G[i, j, k, _U, 1], s_G[i, j, k, _U, 2], s_G[i, j, k, _U, 3] = MJ * (ηx * fluxU), MJ * (ηy * fluxU), MJ * (ηz * fluxU)
-            s_G[i, j, k, _V, 1], s_G[i, j, k, _V, 2], s_G[i, j, k, _V, 3] = MJ * (ηx * fluxV), MJ * (ηy * fluxV), MJ * (ηz * fluxV)
-            s_G[i, j, k, _W, 1], s_G[i, j, k, _W, 2], s_G[i, j, k, _W, 3] = MJ * (ηx * fluxW), MJ * (ηy * fluxW), MJ * (ηz * fluxW)
-            s_G[i, j, k, _E, 1], s_G[i, j, k, _E, 2], s_G[i, j, k, _E, 3] = MJ * (ηx * fluxE), MJ * (ηy * fluxE), MJ * (ηz * fluxE)
+            s_G[i, j, k, _ρ, 1], s_G[i, j, k, _ρ, 2], s_G[i, j, k, _ρ, 3] = build_volume_fluxes_ijke(MJ,ηx,fluxρ,0.0,0.0,0.0,0.0),
+                                                                            build_volume_fluxes_ijke(MJ,0.0,0.0,ηy,fluxρ,0.0,0.0),
+                                                                            build_volume_fluxes_ijke(MJ,0.0,0.0,0.0,0.0,ηz,fluxρ)
+            s_G[i, j, k, _U, 1], s_G[i, j, k, _U, 2], s_G[i, j, k, _U, 3] = build_volume_fluxes_ijke(MJ,ηx,fluxU,0.0,0.0,0.0,0.0),
+                                                                            build_volume_fluxes_ijke(MJ,0.0,0.0,ηy,fluxU,0.0,0.0),
+                                                                            build_volume_fluxes_ijke(MJ,0.0,0.0,0.0,0.0,ηz,fluxU)
+            s_G[i, j, k, _V, 1], s_G[i, j, k, _V, 2], s_G[i, j, k, _V, 3] = build_volume_fluxes_ijke(MJ,ηx,fluxV,0.0,0.0,0.0,0.0),
+                                                                            build_volume_fluxes_ijke(MJ,0.0,0.0,ηy,fluxV,0.0,0.0),
+                                                                            build_volume_fluxes_ijke(MJ,0.0,0.0,0.0,0.0,ηz,fluxV)
+            s_G[i, j, k, _W, 1], s_G[i, j, k, _W, 2], s_G[i, j, k, _W, 3] = build_volume_fluxes_ijke(MJ,ηx,fluxW,0.0,0.0,0.0,0.0),
+                                                                            build_volume_fluxes_ijke(MJ,0.0,0.0,ηy,fluxW,0.0,0.0),
+                                                                            build_volume_fluxes_ijke(MJ,0.0,0.0,0.0,0.0,ηz,fluxW)
+            s_G[i, j, k, _E, 1], s_G[i, j, k, _E, 2], s_G[i, j, k, _E, 3] = build_volume_fluxes_ijke(MJ,ηx,fluxE,0.0,0.0,0.0,0.0),
+                                                                            build_volume_fluxes_ijke(MJ,0.0,0.0,ηy,fluxE,0.0,0.0),
+                                                                            build_volume_fluxes_ijke(MJ,0.0,0.0,0.0,0.0,ηz,fluxE)
 
-            s_H[i, j, k, _ρ, 1], s_H[i, j, k, _ρ, 2], s_H[i, j, k, _ρ, 3] = MJ * (ζx * fluxρ), MJ * (ζy * fluxρ), MJ * (ζz * fluxρ)
-            s_H[i, j, k, _U, 1], s_H[i, j, k, _U, 2], s_H[i, j, k, _U, 3] = MJ * (ζx * fluxU), MJ * (ζy * fluxU), MJ * (ζz * fluxU)
-            s_H[i, j, k, _V, 1], s_H[i, j, k, _V, 2], s_H[i, j, k, _V, 3] = MJ * (ζx * fluxV), MJ * (ζy * fluxV), MJ * (ζz * fluxV)
-            s_H[i, j, k, _W, 1], s_H[i, j, k, _W, 2], s_H[i, j, k, _W, 3] = MJ * (ζx * fluxW), MJ * (ζy * fluxW), MJ * (ζz * fluxW)
-            s_H[i, j, k, _E, 1], s_H[i, j, k, _E, 2], s_H[i, j, k, _E, 3] = MJ * (ζx * fluxE), MJ * (ζy * fluxE), MJ * (ζz * fluxE)
+            s_H[i, j, k, _ρ, 1], s_H[i, j, k, _ρ, 2], s_H[i, j, k, _ρ, 3] = build_volume_fluxes_ijke(MJ,ζx,fluxρ,0.0,0.0,0.0,0.0),
+                                                                            build_volume_fluxes_ijke(MJ,0.0,0.0,ζy,fluxρ,0.0,0.0),
+                                                                            build_volume_fluxes_ijke(MJ,0.0,0.0,0.0,0.0,ζz,fluxρ)
+            s_H[i, j, k, _U, 1], s_H[i, j, k, _U, 2], s_H[i, j, k, _U, 3] = build_volume_fluxes_ijke(MJ,ζx,fluxU,0.0,0.0,0.0,0.0),
+                                                                            build_volume_fluxes_ijke(MJ,0.0,0.0,ζy,fluxU,0.0,0.0),
+                                                                            build_volume_fluxes_ijke(MJ,0.0,0.0,0.0,0.0,ζz,fluxU)
+            s_H[i, j, k, _V, 1], s_H[i, j, k, _V, 2], s_H[i, j, k, _V, 3] = build_volume_fluxes_ijke(MJ,ζx,fluxV,0.0,0.0,0.0,0.0),
+                                                                            build_volume_fluxes_ijke(MJ,0.0,0.0,ζy,fluxV,0.0,0.0),
+                                                                            build_volume_fluxes_ijke(MJ,0.0,0.0,0.0,0.0,ζz,fluxV)
+            s_H[i, j, k, _W, 1], s_H[i, j, k, _W, 2], s_H[i, j, k, _W, 3] = build_volume_fluxes_ijke(MJ,ζx,fluxW,0.0,0.0,0.0,0.0),
+                                                                            build_volume_fluxes_ijke(MJ,0.0,0.0,ζy,fluxW,0.0,0.0),
+                                                                            build_volume_fluxes_ijke(MJ,0.0,0.0,0.0,0.0,ζz,fluxW)
+            s_H[i, j, k, _E, 1], s_H[i, j, k, _E, 2], s_H[i, j, k, _E, 3] = build_volume_fluxes_ijke(MJ,ζx,fluxE,0.0,0.0,0.0,0.0),
+                                                                            build_volume_fluxes_ijke(MJ,0.0,0.0,ζy,fluxE,0.0,0.0),
+                                                                            build_volume_fluxes_ijke(MJ,0.0,0.0,0.0,0.0,ζz,fluxE)        
+        
+        
         end
 
         # loop of ξ-grid lines
@@ -740,24 +816,29 @@ function volume_div!(::Val{dim}, ::Val{N}, rhs::Array, gradQ, Q, vgeo, D, elems)
             fluxE_x = u*(2*ux + lambda*div_u) + v*(uy + vx) + w*(uz + wx) + c_p/Pr*Tx
             fluxE_y = u*(vx + uy) + v*(2*vy + lambda*div_u) + w*(vz + wy) + c_p/Pr*Ty
             fluxE_z = u*(wx + uz) + v*(wy + vz) + w*(2*wz + lambda*div_u) + c_p/Pr*Tz
+	    
+	    # ------- ASR ------- #
+            
+            s_F[i, j, k, _ρ] = build_volume_fluxes_ijke(MJ, ξx, fluxρ_x, ξy, fluxρ_y, ξz, fluxρ_z)
+            s_F[i, j, k, _U] = build_volume_fluxes_ijke(MJ, ξx, fluxU_x, ξy, fluxU_y, ξz, fluxU_z)
+            s_F[i, j, k, _V] = build_volume_fluxes_ijke(MJ, ξx, fluxV_x, ξy, fluxV_y, ξz, fluxV_z)
+            s_F[i, j, k, _W] = build_volume_fluxes_ijke(MJ, ξx, fluxW_x, ξy, fluxW_y, ξz, fluxW_z)
+            s_F[i, j, k, _E] = build_volume_fluxes_ijke(MJ, ξx, fluxE_x, ξy, fluxE_y, ξz, fluxE_z)
 
-            s_F[i, j, k, _ρ] = MJ * (ξx * fluxρ_x + ξy * fluxρ_y + ξz * fluxρ_z)
-            s_F[i, j, k, _U] = MJ * (ξx * fluxU_x + ξy * fluxU_y + ξz * fluxU_z)
-            s_F[i, j, k, _V] = MJ * (ξx * fluxV_x + ξy * fluxV_y + ξz * fluxV_z)
-            s_F[i, j, k, _W] = MJ * (ξx * fluxW_x + ξy * fluxW_y + ξz * fluxW_z)
-            s_F[i, j, k, _E] = MJ * (ξx * fluxE_x + ξy * fluxE_y + ξz * fluxE_z)
+            s_G[i, j, k, _ρ] = build_volume_fluxes_ijke(MJ, ηx, fluxρ_x, ηy, fluxρ_y, ηz, fluxρ_z)
+            s_G[i, j, k, _U] = build_volume_fluxes_ijke(MJ, ηx, fluxU_x, ηy, fluxU_y, ηz, fluxU_z)
+            s_G[i, j, k, _V] = build_volume_fluxes_ijke(MJ, ηx, fluxV_x, ηy, fluxV_y, ηz, fluxV_z)
+            s_G[i, j, k, _W] = build_volume_fluxes_ijke(MJ, ηx, fluxW_x, ηy, fluxW_y, ηz, fluxW_z)
+            s_G[i, j, k, _E] = build_volume_fluxes_ijke(MJ, ηx, fluxE_x, ηy, fluxE_y, ηz, fluxE_z)
 
-            s_G[i, j, k, _ρ] = MJ * (ηx * fluxρ_x + ηy * fluxρ_y + ηz * fluxρ_z)
-            s_G[i, j, k, _U] = MJ * (ηx * fluxU_x + ηy * fluxU_y + ηz * fluxU_z)
-            s_G[i, j, k, _V] = MJ * (ηx * fluxV_x + ηy * fluxV_y + ηz * fluxV_z)
-            s_G[i, j, k, _W] = MJ * (ηx * fluxW_x + ηy * fluxW_y + ηz * fluxW_z)
-            s_G[i, j, k, _E] = MJ * (ηx * fluxE_x + ηy * fluxE_y + ηz * fluxE_z)
+            s_H[i, j, k, _ρ] = build_volume_fluxes_ijke(MJ, ζx, fluxρ_x, ζy, fluxρ_y, ζz, fluxρ_z)
+            s_H[i, j, k, _U] = build_volume_fluxes_ijke(MJ, ζx, fluxU_x, ζy, fluxU_y, ζz, fluxU_z)
+            s_H[i, j, k, _V] = build_volume_fluxes_ijke(MJ, ζx, fluxV_x, ζy, fluxV_y, ζz, fluxV_z)
+            s_H[i, j, k, _W] = build_volume_fluxes_ijke(MJ, ζx, fluxW_x, ζy, fluxW_y, ζz, fluxW_z)
+            s_H[i, j, k, _E] = build_volume_fluxes_ijke(MJ, ζx, fluxE_x, ζy, fluxE_y, ζz, fluxE_z)
 
-            s_H[i, j, k, _ρ] = MJ * (ζx * fluxρ_x + ζy * fluxρ_y + ζz * fluxρ_z)
-            s_H[i, j, k, _U] = MJ * (ζx * fluxU_x + ζy * fluxU_y + ζz * fluxU_z)
-            s_H[i, j, k, _V] = MJ * (ζx * fluxV_x + ζy * fluxV_y + ζz * fluxV_z)
-            s_H[i, j, k, _W] = MJ * (ζx * fluxW_x + ζy * fluxW_y + ζz * fluxW_z)
-            s_H[i, j, k, _E] = MJ * (ζx * fluxE_x + ζy * fluxE_y + ζz * fluxE_z)
+            # ------ ASR ------ # 
+                   
         end
 
         # loop of ξ-grid lines

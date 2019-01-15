@@ -4,7 +4,9 @@
 
 
 # 1) Clean-up of 3D NSE file (group DG functions and make them as close to a "black-box" solver as reasonably possible. 
-# 	Goal is to hide details of DG from day-to-day users of this code (enough details required to allow equations to be modified easily) 	
+# 	Goal is to hide details of DG from day-to-day users of this code 
+# 	(enough details required to allow equations to be modified easily)
+# 	Current changes only applied to CPU functions. @hascuda functions not cleaned up
 #	Status: (Complete) (14 Jan 2019)
 
 # 2) Tracer equations. Follow up with extension to multiple tracers.
@@ -18,6 +20,4 @@
 # 4) SGS (DSGS or Smagorinsky) 
 # 	Goal is to build in either the residual based subgrid scale ("dynamic") model or the classical Smagorinksy eddy-viscosity model
 # 	Status: Not started. Pending discussion with SM and TS (Incomplete) 
-#
-# 
-#
+

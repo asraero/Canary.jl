@@ -11,8 +11,8 @@
 
 # 2) Tracer equations. Follow up with extension to multiple tracers.
 # 	Goal is to incorporate in 3 dimensions equations for multiple tracers
-# 	Status: Single-tracer currently in place. (Incomplete)
-#
+# 	Status: Single-tracer currently in place. (Debug)
+# 
 # 3) Moisture
 # 	Goal is to incorporate in 3 dimensions the equations for moist air quantities. 
 # 	Status: Not started. Pending discussion with SM (Incomplete)

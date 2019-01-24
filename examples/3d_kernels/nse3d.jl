@@ -78,6 +78,7 @@ include(joinpath(@__DIR__,"../../src/mesh.jl"))
 include(joinpath(@__DIR__,"../../src/operators.jl"))
 include(joinpath(@__DIR__,"../../src/metric.jl"))
 include(joinpath(@__DIR__,"../../src/Canary.jl"))
+
 using MPI
 #using Canary
 using Printf: @sprintf
@@ -107,7 +108,9 @@ end
 
 # {{{ constants
 # note the order of the fields below is also assumed in the code.
-const _nstate = 5
+const _nsd = 3 # Number of Spatial Dimensions
+const _ntracers = 0
+const _nstate = _ntracers + _nsd + 2
 const _U, _V, _W, _ρ, _E = 1:_nstate
 const stateid = (U = _U, V = _V, W = _W, ρ = _ρ, E = _E)
 
@@ -124,64 +127,67 @@ const _nsgeo = 5
 const _nx, _ny, _nz, _sMJ, _vMJI = 1:_nsgeo
 const sgeoid = (nx = _nx, ny = _ny, nz = _nz, sMJ = _sMJ, vMJI = _vMJI)
 
-const _γ = 14  // 10
-const _p0 = 100000
-const _R_gas = 28717 // 100
-const _c_p = 100467 // 100
-const _c_v = 7175 // 10
-const _gravity = 10
-const _Prandtl = 71 // 100 # Fixed typo in Prandtl number, was 7.1 now is 0.71(ASR)
-const _Stokes = -2 // 3
+const _γ        = 14  // 10
+const _p0       = 100000
+const _R_gas    = 28717 // 100
+const _c_p      = 100467 // 100
+const _c_v      = 7175 // 10
+const _gravity  = 10
+const _Prandtl  = 71 // 100 
+const _Stokes   = -2 // 3
 # }}}
 
- # {{{ Collect cleanup functions - ASR 1/10/19                                                                      
-                                                                                                                     
-  # --------ASR --------#                                                                                             
-  function compute_wave_speed(nxM, nyM, nzM, ρMinv, UM, VM, WM, PM, ρPinv, UP, VP, WP, PP, γ)                          
-                                                                                                                        
-          λM = ρMinv * abs(nxM * UM + nyM * VM + nzM * WM) + sqrt(ρMinv * γ * PM)                                        
-          λP = ρPinv * abs(nxM * UP + nyM * VP + nzM * WP) + sqrt(ρPinv * γ * PP)                                         
-          λ  =  max(λM, λP)                                                                                                
-                                                                                                                            
-          return λ                                                                                                           
-  end                                                                                                                         
-                                                                                                                               
-  # --------ASR --------#                                                                                                       
-  function integrate_volume_rhs!(rhs, e, D, Nq, s_F, s_G, s_H)                                                                   
-                                                                                                                                  
-            # loop of ξ-grid lines                                                                                                 
-            for s = 1:_nstate, k = 1:Nq, j = 1:Nq, i = 1:Nq, n = 1:Nq                                                               
-                rhs[i, j, k, s, e] += D[n, i] * s_F[n, j, k, s]                                                                      
-            end                                                                                                                       
-            # loop of η-grid lines                                                                                                     
-            for s = 1:_nstate, k = 1:Nq, j = 1:Nq, i = 1:Nq, n = 1:Nq                                                                   
-                rhs[i, j, k, s, e] += D[n, j] * s_G[i, n, k, s]                                                                          
-            end                                                                                                                           
-            # loop of ζ-grid lines                                                                                                         
-            for s = 1:_nstate, k = 1:Nq, j = 1:Nq, i = 1:Nq, n = 1:Nq                                                                       
-                rhs[i, j, k, s, e] += D[n, k] * s_H[i, j, n, s]                                                                              
-            end                                                                                                                               
-  end                                                                                                                                          
-                                                                                                                                                
-  # --------ASR --------#                                                                                                                        
-  function build_volume_fluxes_ijke(MJ,                                                                                                           
-                                 ξx,fluxQ_x,                                                                                                       
-                                 ξy,fluxQ_y,                                                                                                        
-                                 ξz,fluxQ_z)                                                                                                         
-  	volume_flux = MJ * (ξx * fluxQ_x + ξy * fluxQ_y + ξz * fluxQ_z)                                                                                 
-  	return volume_flux # Note that the last value computed is the one returned by default in Julia
-  end                                                                                                                                                  
-                                                                                                                                                        
-  # ------ ASR --------- #                                                                                                                               
-  function build_surface_fluxes_ijke(nxM, fluxQM_x, fluxQP_x,                                                                                             
-                                  nyM, fluxQM_y, fluxQP_y,                                                                                                 
-                                  nzM, fluxQM_z, fluxQP_z,                                                                                                  
-                                  λ, QM,QP)                                                                                                                  
-                                                                                                                                                              
-  	surface_flux = (nxM * (fluxQM_x + fluxQP_x) + nyM * (fluxQM_y + fluxQP_y) + nzM * (fluxQM_z + fluxQP_z) - λ * (QP -QM)) / 2                              
-  	return surface_flux # Note that the last value computed is the one returned by default in Julia
+# {{{ Collect cleanup functions - ASR 1/10/19
+
+# --------ASR --------#
+function compute_wave_speed(nxM, nyM, nzM, ρMinv, UM, VM, WM, PM, ρPinv, UP, VP, WP, PP, γ)
+
+        λM = ρMinv * abs(nxM * UM + nyM * VM + nzM * WM) + sqrt(ρMinv * γ * PM)
+        λP = ρPinv * abs(nxM * UP + nyM * VP + nzM * WP) + sqrt(ρPinv * γ * PP)
+        λ  =  max(λM, λP)
+
+        return λ
+end
+
+# --------ASR --------#
+function integrate_volume_rhs!(rhs, e, D, Nq, s_F, s_G, s_H)
+
+          # loop of ξ-grid lines
+          for s = 1:_nstate, k = 1:Nq, j = 1:Nq, i = 1:Nq, n = 1:Nq
+              rhs[i, j, k, s, e] += D[n, i] * s_F[n, j, k, s]
+          end
+          # loop of η-grid lines 
+          for s = 1:_nstate, k = 1:Nq, j = 1:Nq, i = 1:Nq, n = 1:Nq
+              rhs[i, j, k, s, e] += D[n, j] * s_G[i, n, k, s]
+          end
+          # loop of ζ-grid lines
+          for s = 1:_nstate, k = 1:Nq, j = 1:Nq, i = 1:Nq, n = 1:Nq
+              rhs[i, j, k, s, e] += D[n, k] * s_H[i, j, n, s]
+          end
   end
-  # }}}
+
+  # --------ASR --------#
+function build_volume_fluxes_ijke(MJ,
+				    ξx,fluxQ_x,
+				    ξy,fluxQ_y,
+				    ξz,fluxQ_z)
+  	volume_flux = MJ * (ξx * fluxQ_x + ξy * fluxQ_y + ξz * fluxQ_z)
+  	return volume_flux # Note that the last value computed is the one returned by default in Julia
+end
+
+  # ------ ASR --------- #
+function build_surface_fluxes_ijke(nxM, fluxQM_x, fluxQP_x,
+				   nyM, fluxQM_y, fluxQP_y,
+				   nzM, fluxQM_z, fluxQP_z,
+				   λ, QM,QP)
+  	surface_flux = (nxM * (fluxQM_x + fluxQP_x) + nyM * (fluxQM_y + fluxQP_y) + nzM * (fluxQM_z + fluxQP_z) - λ * (QP -QM)) / 2
+ 	return surface_flux # Note that the last value computed is the one returned by default in Julia
+end
+
+# }}}
+
+
+
 # {{{ courant
 function courantnumber(::Val{dim}, ::Val{N}, vgeo, Q, mpicomm) where {dim, N}
     DFloat = eltype(Q)
@@ -330,6 +336,7 @@ function volume_rhs!(::Val{dim}, ::Val{N}, rhs::Array, Q, vgeo, D, elems) where 
     rhs = reshape(rhs, Nq, Nq, Nq, _nstate, nelem)
     vgeo = reshape(vgeo, Nq, Nq, Nq, _nvgeo, nelem)
 
+    # Allocate Arrays
     s_F = Array{DFloat}(undef, Nq, Nq, Nq, _nstate)
     s_G = Array{DFloat}(undef, Nq, Nq, Nq, _nstate)
     s_H = Array{DFloat}(undef, Nq, Nq, Nq, _nstate)
@@ -366,31 +373,31 @@ function volume_rhs!(::Val{dim}, ::Val{N}, rhs::Array, Q, vgeo, D, elems) where 
             fluxE_z = ρinv * W * (E+P)
 
 	    #  ---------- ASR -------- #
-            s_F[i, j, k, _ρ] = build_volume_fluxes_ijke(MJ,ξx,fluxρ_x,ξy,fluxρ_y,ξz,fluxρ_z)
-            s_F[i, j, k, _U] = build_volume_fluxes_ijke(MJ,ξx,fluxU_x,ξy,fluxU_y,ξz,fluxU_z)
-            s_F[i, j, k, _V] = build_volume_fluxes_ijke(MJ,ξx,fluxV_x,ξy,fluxV_y,ξz,fluxV_z)
-            s_F[i, j, k, _W] = build_volume_fluxes_ijke(MJ,ξx,fluxW_x,ξy,fluxW_y,ξz,fluxW_z)
-            s_F[i, j, k, _E] = build_volume_fluxes_ijke(MJ,ξx,fluxE_x,ξy,fluxE_y,ξz,fluxE_z)
+            s_F[i, j, k, _ρ] = build_volume_fluxes_ijke(MJ, ξx, fluxρ_x, ξy, fluxρ_y, ξz, fluxρ_z)
+            s_F[i, j, k, _U] = build_volume_fluxes_ijke(MJ, ξx, fluxU_x, ξy, fluxU_y, ξz, fluxU_z)
+            s_F[i, j, k, _V] = build_volume_fluxes_ijke(MJ, ξx, fluxV_x, ξy, fluxV_y, ξz, fluxV_z)
+            s_F[i, j, k, _W] = build_volume_fluxes_ijke(MJ, ξx, fluxW_x, ξy, fluxW_y, ξz, fluxW_z)
+            s_F[i, j, k, _E] = build_volume_fluxes_ijke(MJ, ξx, fluxE_x, ξy, fluxE_y, ξz, fluxE_z)
+	
+            s_G[i, j, k, _ρ] = build_volume_fluxes_ijke(MJ, ηx, fluxρ_x, ηy, fluxρ_y, ηz, fluxρ_z)
+            s_G[i, j, k, _U] = build_volume_fluxes_ijke(MJ, ηx, fluxU_x, ηy, fluxU_y, ηz, fluxU_z)
+            s_G[i, j, k, _V] = build_volume_fluxes_ijke(MJ, ηx, fluxV_x, ηy, fluxV_y, ηz, fluxV_z)
+            s_G[i, j, k, _W] = build_volume_fluxes_ijke(MJ, ηx, fluxW_x, ηy, fluxW_y, ηz, fluxW_z)
+            s_G[i, j, k, _E] = build_volume_fluxes_ijke(MJ, ηx, fluxE_x, ηy, fluxE_y, ηz, fluxE_z)
 
-            s_G[i, j, k, _ρ] = build_volume_fluxes_ijke(MJ,ηx,fluxρ_x,ηy,fluxρ_y,ηz,fluxρ_z)
-            s_G[i, j, k, _U] = build_volume_fluxes_ijke(MJ,ηx,fluxU_x,ηy,fluxU_y,ηz,fluxU_z)
-            s_G[i, j, k, _V] = build_volume_fluxes_ijke(MJ,ηx,fluxV_x,ηy,fluxV_y,ηz,fluxV_z)
-            s_G[i, j, k, _W] = build_volume_fluxes_ijke(MJ,ηx,fluxW_x,ηy,fluxW_y,ηz,fluxW_z)
-            s_G[i, j, k, _E] = build_volume_fluxes_ijke(MJ,ηx,fluxE_x,ηy,fluxE_y,ηz,fluxE_z)
-
-            s_H[i, j, k, _ρ] = build_volume_fluxes_ijke(MJ,ζx,fluxρ_x,ζy,fluxρ_y,ζz,fluxρ_z)
-            s_H[i, j, k, _U] = build_volume_fluxes_ijke(MJ,ζx,fluxU_x,ζy,fluxU_y,ζz,fluxU_z)
-            s_H[i, j, k, _V] = build_volume_fluxes_ijke(MJ,ζx,fluxV_x,ζy,fluxV_y,ζz,fluxV_z)
-            s_H[i, j, k, _W] = build_volume_fluxes_ijke(MJ,ζx,fluxW_x,ζy,fluxW_y,ζz,fluxW_z)
-            s_H[i, j, k, _E] = build_volume_fluxes_ijke(MJ,ζx,fluxE_x,ζy,fluxE_y,ζz,fluxE_z)
+            s_H[i, j, k, _ρ] = build_volume_fluxes_ijke(MJ, ζx, fluxρ_x, ζy, fluxρ_y, ζz, fluxρ_z)
+            s_H[i, j, k, _U] = build_volume_fluxes_ijke(MJ, ζx, fluxU_x, ζy, fluxU_y, ζz, fluxU_z)
+            s_H[i, j, k, _V] = build_volume_fluxes_ijke(MJ, ζx, fluxV_x, ζy, fluxV_y, ζz, fluxV_z)
+            s_H[i, j, k, _W] = build_volume_fluxes_ijke(MJ, ζx, fluxW_x, ζy, fluxW_y, ζz, fluxW_z)
+            s_H[i, j, k, _E] = build_volume_fluxes_ijke(MJ, ζx, fluxE_x, ζy, fluxE_y, ζz, fluxE_z)
 
             # --------- ASR --------- #
             # buoyancy term
             rhs[i, j, k, _W, e] -= MJ * ρ * gravity
         end
 	    # ASR Commented - DG Integration function in "cleanup" section   
-  	    integrate_volume_rhs!(rhs, e, D, Nq, s_F, s_G, s_H)                                                                   
-                                                                                                                                  
+  	    integrate_volume_rhs!(rhs, e, D, Nq, s_F, s_G, s_H)
+        
 	end
 end
 
@@ -485,9 +492,8 @@ function flux_rhs!(::Val{dim}, ::Val{N}, rhs::Array, Q, sgeo, vgeo, elems, vmapM
                 fluxVP_z = ρPinv * VP * WP
                 fluxWP_z = ρPinv * WP * WP + PP
                 fluxEP_z = ρPinv * WP * (EP+PP)
-		# ------ ASR -------- # Hide wavespeed calculation 
-                λM = ρMinv * abs(nxM * UM + nyM * VM + nzM * WM) + sqrt(ρMinv * γ * PM)
-                λP = ρPinv * abs(nxM * UP + nyM * VP + nzM * WP) + sqrt(ρPinv * γ * PP)
+	
+                # ------ ASR -------- # Hide wavespeed calculation 
                 λ  = compute_wave_speed(nxM, nyM, nzM, ρMinv, UM, VM, WM, PM, ρPinv, UP, VP, WP, PP, γ)
 
                 # ------- ASR --------- #
@@ -2009,6 +2015,7 @@ function main()
     #Initial Conditions
     function ic(dim, x...)
         # FIXME: Type generic?
+
         DFloat = eltype(x)
         γ::DFloat       = _γ
         p0::DFloat      = _p0

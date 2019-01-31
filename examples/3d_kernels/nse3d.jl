@@ -1621,6 +1621,7 @@ function lowstorageRK(::Val{dim}, ::Val{N}, mesh, vgeo, sgeo, Q, rhs, D,
     d_sendelems, d_elemtobndy = ArrType(mesh.sendelems), ArrType(mesh.elemtobndy)
     d_sendQ, d_recvQ = ArrType(sendQ), ArrType(recvQ)
     d_D = ArrType(D)
+
     #Create Device LDG Arrays
     d_gradQL = zeros(DFloat, (N+1)^dim, _nstate, dim, nelem)
     d_rhs_gradQL = zeros(DFloat, (N+1)^dim, _nstate, dim, nelem)

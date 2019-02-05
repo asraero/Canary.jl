@@ -72,8 +72,7 @@
 # ## Commented Program
 #
 #--------------------------------Markdown Language Header-----------------------
-include(joinpath(@__DIR__,"../../src/InitPackages.jl"))
-include(joinpath(@__DIR__,"vtk.jl"))
+include(joinpath(@__DIR__,"InitPackages.jl"))
 
 # Within REPL run include("InitPackages.jl") before running include("nse3d-tracer.jl")
 

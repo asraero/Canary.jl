@@ -19,6 +19,5 @@
 #
 # 4) SGS (DSGS or Smagorinsky) 
 # 	Goal is to build in either the residual based subgrid scale ("dynamic") model or the classical Smagorinksy eddy-viscosity model
-# 	Status: Not started. Pending discussion with SM and TS (Incomplete). Module for SGS parameterisation
+# 	Status: Completed (SM) in 2D. Pending in 3D. Need to build module for SGS parameterisation
 #
-#    Caution with Package absolute /relative paths. 

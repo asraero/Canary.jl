@@ -15,7 +15,7 @@
 #
 # 3) Moisture
 # 	Goal is to incorporate in 3 dimensions the equations for moist air quantities. 
-# 	Status: Cases 1, 1003, 1010 working.  Pending discussion with SM (Incomplete)
+# 	Status: Cases 1, 1003, 1010 working.  Test simulations pending (ASR)
 #
 # 4) SGS (DSGS or Smagorinsky) 
 # 	Goal is to build in either the residual based subgrid scale ("dynamic") model or the classical Smagorinksy eddy-viscosity model

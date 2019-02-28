@@ -1,7 +1,10 @@
 # Notes containing list of changes to 3D NSE code
 # Author:	A Sridhar
-# Date:		February 12, 2019
+# Date:		February 28, 2019
 
+# Work on asraero/Canary.jl-compute-kernels will not continue past Feb 28, 2019. Moved to asraero/CLIMA in March 2019.
+
+#########################################################################################################################################
 
 # 1) Clean-up of 3D NSE file (group DG functions and make them as close to a "black-box" solver as reasonably possible. 
 # 	Goal is to hide details of DG from day-to-day users of this code 
@@ -11,13 +14,13 @@
 
 # 2) Tracer equations. Follow up with extension to multiple tracers.
 # 	Goal is to incorporate in 3 dimensions equations for multiple tracers
-# 	Status: 3-tracer equations currently in place. 
+# 	Status: 3-tracer equations currently in place. Complete
 #
 # 3) Moisture
 # 	Goal is to incorporate in 3 dimensions the equations for moist air quantities. 
-# 	Status: Cases 1, 1003, 1010 working.  Test simulations pending (ASR)
+# 	Status: Cases 1, 1003, 1010 working.  
 #
 # 4) SGS (DSGS or Smagorinsky) 
-# 	Goal is to build in either the residual based subgrid scale ("dynamic") model or the classical Smagorinksy eddy-viscosity model
-# 	Status: Completed (SM) in 2D. Pending in 3D. Need to build module for SGS parameterisation
-#
+#       Stability tests
+
+#########################################################################################################################################

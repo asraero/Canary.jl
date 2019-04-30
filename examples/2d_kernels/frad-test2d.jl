@@ -97,7 +97,6 @@ function vertint_flux!(::Val{dim}, ::Val{N}, Q, vgeo, sgeo, elems, vmapM, vmapP,
             end
         end
     end
-    @show(Q_int)
 end
 
 function driver(::Val{dim}, ::Val{N}, mpicomm, mesh, tend,
@@ -129,12 +128,11 @@ function driver(::Val{dim}, ::Val{N}, mpicomm, mesh, tend,
     (nface, nelem) = size(mesh.elemtoelem)
         
     Q = zeros(DFloat, (N+1)^dim, _nstate, nelem)
-    @show(ω, J, MJ) # LGL point weights
 
     @inbounds for e = 1:nelem, i = 1:(N+1)^dim, 
         x = vgeo[i,_x, e]
         y = vgeo[i,_y, e]
-        Q[i,1, e] = cospi(y/2)
+        Q[i,1, e] = 1#cospi(y/2)
         Q[i,2, e] = x
         Q[i,3, e] = 0
         Q[i,4, e] = sin(x)
@@ -146,8 +144,8 @@ function main()
     
     DFloat = Float64
     dim = 2
-    N=10
-    Ne=1 # FIXME: multiple element case 
+    N=2
+    Ne= (1,3)
     visc=0.01
     iplot=10
     icase=10
@@ -167,8 +165,8 @@ function main()
     # No advection terms
     advection = false
     # Generate mesh
-    mesh = brickmesh((range(DFloat(-1); length=Ne+1, stop=1),
-                      range(DFloat(-1); length=Ne+1, stop=1)), 
+    mesh = brickmesh((range(DFloat(-1); length=Ne[1]+1, stop=1),
+                      range(DFloat(-1); length=Ne[2]+1, stop=1)), 
 		                  periodic; 
                       part=mpirank + 1, 
                       numparts=mpisize)

@@ -63,9 +63,7 @@ function computegeometry(::Val{dim}, mesh, D, ξ, ω, meshwarp, vmapM) where dim
     # Compute the metric terms
     computemetric!(x, y, J, ξx, ηx, ξy, ηy, sJ, nx, ny, D)
     M = kron(1, ntuple(j->ω, dim)...)
-    ω_test = diag(repeat(Diagonal(ω), Nq, Nq))
     MJ .= M .* J
-    ωJ .= ω_test .* J 
     MJI .= 1 ./ MJ
     vMJI .= MJI[vmapM]
     sM = dim > 1 ? kron(1, ntuple(j->ω, dim-1)...) : one(DFloat)
@@ -80,23 +78,20 @@ function vertint_flux!(::Val{dim}, ::Val{N}, Q, vgeo, sgeo, elems, vmapM, vmapP,
   Np = (N+1)^dim
   Nfp = (N+1)^(dim-1)
   nface = 2*dim
+  f = 1
   
   @inbounds for e in elems
-        for f = 1:1
             for n = 1:Nfp
-              nxM, nyM ,sMJ = sgeo[_nx, n, f, e], 
-                              sgeo[_ny, n , f, e], 
-                              sgeo[_sMJ, n, f, e]
-              idM, idP = vmapM[n, f, e], 
-                         vmapP[n, f, e]
-              eM, eP = e, 
-                       ((idP - 1) ÷ Np) + 1
-              vidM, vidP = ((idM - 1) % Np) + 1,  
-                           ((idP - 1) % Np) + 1
-                           Q_int += sMJ * Q[vidM, 1, eM]
+              
+              sMJ = sgeo[_sMJ, n, f, e]
+              idM = vmapM[n, f, e]
+              eM = e 
+              vidM = ((idM - 1) % Np) + 1 
+              Q_int += sMJ * Q[vidM, 1, eM]
+            
             end
-        end
-    end
+   @show(Q_int)
+   end
 end
 
 function driver(::Val{dim}, ::Val{N}, mpicomm, mesh, tend,
@@ -145,7 +140,7 @@ function main()
     DFloat = Float64
     dim = 2
     N=2
-    Ne= (1,3)
+    Ne= (1,5)
     visc=0.01
     iplot=10
     icase=10

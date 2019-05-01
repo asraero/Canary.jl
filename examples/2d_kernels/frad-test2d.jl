@@ -73,30 +73,83 @@ function computegeometry(::Val{dim}, mesh, D, ξ, ω, meshwarp, vmapM) where dim
 end
 # }}}
       
-function vertint_flux!(::Val{dim}, ::Val{N}, Q, vgeo, sgeo, elems, vmapM, vmapP, J, D)where {dim, N}
+function vertint_flux!(::Val{dim}, ::Val{N}, ::Val{horsize}, Q, vgeo, sgeo, elems, vmapM, vmapP, J, D, mesh) where {dim, N, horsize} 
   Q_int = 0 
   Np = (N+1)^dim
   Nfp = (N+1)^(dim-1)
   nface = 2*dim
   f = 1
-  
+  Q_store = zeros(eltype(Q), Nfp)
+  ibot = 0 
+  botelems = zeros(eltype(horsize), horsize)
   @inbounds for e in elems
-            for n = 1:Nfp
-              
-              sMJ = sgeo[_sMJ, n, f, e]
-              idM = vmapM[n, f, e]
-              eM = e 
-              vidM = ((idM - 1) % Np) + 1 
-              Q_int += sMJ * Q[vidM, 1, eM]
-            
-            end
-   @show(Q_int)
+    if (e == mesh.elemtoelem[3,e])
+        ibot += 1
+        botelems[ibot] = e
+    end
+  end
+  vcol = 0 
+  @show(botelems)
+
+  Ne_vert = Int64(length(elems) / horsize)
+  @show(Ne_vert)
+  vert_col = zeros(eltype(botelems), horsize, Ne_vert-1)
+  ibot = 0 
+  @inbounds for ebot in botelems
+    ibot += 1
+    # Assuming non-periodic conditions for the top, bottom
+    # We use the list of bottom elements to then find the 
+    # elements `stacked` vertically
+    local_e = ebot
+    elemind = 0 
+    while (local_e != mesh.elemtoelem[4,local_e] ) 
+      elemind += 1
+      vert_col[ibot, elemind] = mesh.elemtoelem[4,local_e] 
+      @show(ibot, elemind)
+      local_e = mesh.elemtoelem[4, local_e]
+    end
+  end
+  @show(vert_col)
+  
+  @inbounds for e in botelems
+    faceid = mesh.elemtoelem[4,e]
+      for n = 1:Nfp
+        sMJ = sgeo[_sMJ, n, f, e]
+        idM = vmapM[n, f, e]
+        eM = e 
+        vidM = ((idM - 1) % Np) + 1 
+        Q_int += sMJ * Q[vidM, 1, eM]
+      end
    end
+   @show(Q_int)
 end
 
-function driver(::Val{dim}, ::Val{N}, mpicomm, mesh, tend,
+#=
+function vertint2_flux!(::Val{dim}, ::Val{N}, ::Val{horsize}, Q, vgeo, sgeo, elems, vmapM, vmapP, J, D, mesh) where {dim, N, horsize}
+  Nq = N + 1
+  Np = (N+1)^dim
+  Nfp = (N+1)^(dim-1)
+  nface = 2*dim
+  f = 1
+  Q_int2 = zeros(eltype(Q), Nq)
+
+  @inbounds for ii = 1:Np
+   @inbounds for e in elems
+
+    @inbounds for n = 1:Nfp
+            sMJ = sgeo[_sMJ, n, f, e]
+            idM = vmapM[n, f, e]
+            eM = e 
+            vidM = ((idM - 1) % Np) + 1 
+            Q_int2[ii]+= sMJ * Q[vidM, 1, eM]
+        end
+      end
+   end
+end
+=#
+function driver(::Val{dim}, ::Val{N}, ::Val{horsize}, mpicomm, mesh, tend,
              advection, visc; meshwarp=(x...)->identity(x), tout = 60, ArrType=Array,
-             plotstep=0) where {dim, N}
+             plotstep=0) where {dim, N, horsize}
 
     DFloat = typeof(tend)
 
@@ -121,26 +174,28 @@ function driver(::Val{dim}, ::Val{N}, mpicomm, mesh, tend,
     D = spectralderivative(ξ)
     (vgeo, sgeo, J, MJ, sMJ) = computegeometry(Val(dim), mesh, D, ξ, ω, meshwarp, vmapM)
     (nface, nelem) = size(mesh.elemtoelem)
-        
+    
     Q = zeros(DFloat, (N+1)^dim, _nstate, nelem)
 
     @inbounds for e = 1:nelem, i = 1:(N+1)^dim, 
         x = vgeo[i,_x, e]
         y = vgeo[i,_y, e]
-        Q[i,1, e] = 1#cospi(y/2)
+        Q[i,1, e] = cospi(y/2) * x 
         Q[i,2, e] = x
         Q[i,3, e] = 0
         Q[i,4, e] = sin(x)
     end
-  vertint_flux!(Val(dim), Val(N), Q, vgeo, sgeo, mesh.realelems, vmapM, vmapP, J, D)
+    vertint_flux!(Val(dim), Val(N), Val(horsize), Q, vgeo, sgeo, mesh.realelems, vmapM, vmapP, J, D, mesh)
+    #vertint2_flux!(Val(dim), Val(N), Val(horsize), Q, vgeo, sgeo, mesh.realelems, vmapM, vmapP, J, D)
 end
 
 function main()
     
     DFloat = Float64
     dim = 2
-    N=2
-    Ne= (1,5)
+    N = 2
+    Ne= (3,2)
+    horsize = Ne[1]
     visc=0.01
     iplot=10
     icase=10
@@ -156,7 +211,7 @@ function main()
     mpisize = MPI.Comm_size(mpicomm)
     
     # Aperiodic boundary conditions
-    periodic = (true,false)
+    periodic = (false,false)
     # No advection terms
     advection = false
     # Generate mesh
@@ -169,7 +224,7 @@ function main()
     # Print run message
     mpirank == 0 && println("Running (CPU)...")
     # Return/store state vector Q obtained from expression in driver()
-    Q = driver(Val(dim), Val(N), mpicomm, mesh, time_final,advection, visc;
+    Q = driver(Val(dim), Val(N), Val(horsize), mpicomm, mesh, time_final,advection, visc;
         ArrType=Array, tout = 10, plotstep = iplot)
     # Check mpirank and print successful completion message
     mpirank == 0 && println("Completed (CPU)")

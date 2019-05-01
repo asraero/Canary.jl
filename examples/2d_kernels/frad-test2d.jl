@@ -89,11 +89,9 @@ function vertint_flux!(::Val{dim}, ::Val{N}, ::Val{horsize}, Q, vgeo, sgeo, elem
     end
   end
   vcol = 0 
-  @show(botelems)
 
   Ne_vert = Int64(length(elems) / horsize)
-  @show(Ne_vert)
-  vert_col = zeros(eltype(botelems), horsize, Ne_vert-1)
+  vert_col = zeros(eltype(botelems), horsize, Ne_vert)
   ibot = 0 
   @inbounds for ebot in botelems
     ibot += 1
@@ -101,7 +99,8 @@ function vertint_flux!(::Val{dim}, ::Val{N}, ::Val{horsize}, Q, vgeo, sgeo, elem
     # We use the list of bottom elements to then find the 
     # elements `stacked` vertically
     local_e = ebot
-    elemind = 0 
+    elemind = 1 
+    vert_col[ibot, elemind] = ebot
     while (local_e != mesh.elemtoelem[4,local_e] ) 
       elemind += 1
       vert_col[ibot, elemind] = mesh.elemtoelem[4,local_e] 
@@ -109,44 +108,32 @@ function vertint_flux!(::Val{dim}, ::Val{N}, ::Val{horsize}, Q, vgeo, sgeo, elem
       local_e = mesh.elemtoelem[4, local_e]
     end
   end
-  @show(vert_col)
   
-  @inbounds for e in botelems
-    faceid = mesh.elemtoelem[4,e]
-      for n = 1:Nfp
-        sMJ = sgeo[_sMJ, n, f, e]
-        idM = vmapM[n, f, e]
-        eM = e 
-        vidM = ((idM - 1) % Np) + 1 
-        Q_int += sMJ * Q[vidM, 1, eM]
-      end
-   end
-   @show(Q_int)
+  
+  
+
+  @inbounds for ibot in botelems
+    elem_list = vert_col[ibot,:]
+    Q_int = 0
+    # Note that this assumes a structured grid 
+    # Parallel sides (vertical / horizontal) so that the surface metrics can 
+    # be assumed constant across all element nodes
+         @inbounds for e in elem_list
+          faceid = mesh.elemtoelem[4,e]
+            for n = 1:Nfp
+              sMJ = sgeo[_sMJ, n, f, e]
+              idM = vmapM[n, f, e]
+              eM = e 
+              vidM = ((idM - 1) % Np) + 1 
+              Q_int += sMJ * Q[vidM, 1, eM]
+            end
+            @show(Q_int)
+         end
+    end
 end
 
-#=
-function vertint2_flux!(::Val{dim}, ::Val{N}, ::Val{horsize}, Q, vgeo, sgeo, elems, vmapM, vmapP, J, D, mesh) where {dim, N, horsize}
-  Nq = N + 1
-  Np = (N+1)^dim
-  Nfp = (N+1)^(dim-1)
-  nface = 2*dim
-  f = 1
-  Q_int2 = zeros(eltype(Q), Nq)
+  
 
-  @inbounds for ii = 1:Np
-   @inbounds for e in elems
-
-    @inbounds for n = 1:Nfp
-            sMJ = sgeo[_sMJ, n, f, e]
-            idM = vmapM[n, f, e]
-            eM = e 
-            vidM = ((idM - 1) % Np) + 1 
-            Q_int2[ii]+= sMJ * Q[vidM, 1, eM]
-        end
-      end
-   end
-end
-=#
 function driver(::Val{dim}, ::Val{N}, ::Val{horsize}, mpicomm, mesh, tend,
              advection, visc; meshwarp=(x...)->identity(x), tout = 60, ArrType=Array,
              plotstep=0) where {dim, N, horsize}
@@ -180,10 +167,7 @@ function driver(::Val{dim}, ::Val{N}, ::Val{horsize}, mpicomm, mesh, tend,
     @inbounds for e = 1:nelem, i = 1:(N+1)^dim, 
         x = vgeo[i,_x, e]
         y = vgeo[i,_y, e]
-        Q[i,1, e] = cospi(y/2) * x 
-        Q[i,2, e] = x
-        Q[i,3, e] = 0
-        Q[i,4, e] = sin(x)
+        Q[i,1, e] = 1 #cospi(y/2)
     end
     vertint_flux!(Val(dim), Val(N), Val(horsize), Q, vgeo, sgeo, mesh.realelems, vmapM, vmapP, J, D, mesh)
     #vertint2_flux!(Val(dim), Val(N), Val(horsize), Q, vgeo, sgeo, mesh.realelems, vmapM, vmapP, J, D)
@@ -194,7 +178,7 @@ function main()
     DFloat = Float64
     dim = 2
     N = 2
-    Ne= (3,2)
+    Ne= (5,1)
     horsize = Ne[1]
     visc=0.01
     iplot=10

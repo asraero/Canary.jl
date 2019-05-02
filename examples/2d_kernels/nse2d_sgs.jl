@@ -2432,7 +2432,7 @@ function main()
     iplot=100
     Ne = 10
     N  = 4
-    visc = 200.0
+    visc = 000.0
     dim = 2
     hardware="cpu"
     if mpirank == 0

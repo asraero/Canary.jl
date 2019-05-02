@@ -74,20 +74,20 @@ end
 # }}}
       
 function vertint_flux!(::Val{dim}, ::Val{N}, ::Val{horsize}, Q, vgeo, sgeo, elems, vmapM, vmapP, J, D, mesh) where {dim, N, horsize} 
-  Q_int = 0 
-  Np = (N+1)^dim
+  
+ #Np = (N+1)^dim
   Nfp = (N+1)^(dim-1)
-  nface = 2*dim
+ #nface = 2*dim
   f = 1
-  Q_store = zeros(eltype(Q), Nfp)
   ibot = 0 
   botelems = zeros(eltype(horsize), horsize)
   @inbounds for e in elems
-    if (e == mesh.elemtoelem[3,e])
+    if (e == mesh.elemtoelem[3,e]) # If it is its own bottom neighbour , move on
         ibot += 1
         botelems[ibot] = e
     end
   end
+  @show(botelems)
   vcol = 0 
 
   Ne_vert = Int64(length(elems) / horsize)
@@ -104,31 +104,25 @@ function vertint_flux!(::Val{dim}, ::Val{N}, ::Val{horsize}, Q, vgeo, sgeo, elem
     while (local_e != mesh.elemtoelem[4,local_e] ) 
       elemind += 1
       vert_col[ibot, elemind] = mesh.elemtoelem[4,local_e] 
-      @show(ibot, elemind)
       local_e = mesh.elemtoelem[4, local_e]
     end
   end
   
-  
-  
-
-  @inbounds for ibot in botelems
+  @inbounds for ibot = 1:length(botelems)
     elem_list = vert_col[ibot,:]
     Q_int = 0
     # Note that this assumes a structured grid 
     # Parallel sides (vertical / horizontal) so that the surface metrics can 
     # be assumed constant across all element nodes
-         @inbounds for e in elem_list
-          faceid = mesh.elemtoelem[4,e]
-            for n = 1:Nfp
-              sMJ = sgeo[_sMJ, n, f, e]
-              idM = vmapM[n, f, e]
-              eM = e 
-              vidM = ((idM - 1) % Np) + 1 
-              Q_int += sMJ * Q[vidM, 1, eM]
-            end
-            @show(Q_int)
-         end
+    @inbounds for e = 1:length(elem_list)
+      faceid = mesh.elemtoelem[4,e]
+        for n = 1:Nfp
+          sMJ = sgeo[_sMJ, n, f, e]
+          Q_int +=  sMJ 
+        end
+     end
+        @show(Q_int)
+        @show(elem_list)
     end
 end
 
@@ -178,7 +172,7 @@ function main()
     DFloat = Float64
     dim = 2
     N = 2
-    Ne= (5,1)
+    Ne= (100,100)
     horsize = Ne[1]
     visc=0.01
     iplot=10

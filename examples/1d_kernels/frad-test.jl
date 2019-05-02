@@ -8,7 +8,6 @@ include(joinpath(@__DIR__,"vtk.jl"))
 include(joinpath(@__DIR__,"../../src/Canary.jl"))
 using MPI
 using ..Canary
-using Plots
 using Printf: @sprintf
 const HAVE_CUDA = try
     using CUDAnative
@@ -82,29 +81,28 @@ end
 # }}}
       
 function vertint!(::Val{dim}, ::Val{N}, Q, vgeo, J, D, elems, ω) where {dim, N}
+    DFloat = eltype(Q)
     Nq = size(D, 1)
     nelem = size(Q)[end]
+    vgeo = reshape(vgeo, Nq, _nvgeo, nelem)
     Q = reshape(Q, Nq, 3, nelem)
-    Q_int0 = 0
-    Q_int1 = 0
-    Q_elem_temp = zeros(DFloat, Nq, nelem)
-    DFloat = eltype(Q)
-    Q_cumulative = zeros(DFloat, Nq)
-    s_F = Array{DFloat}(undef, Nq, _nstate)
+    Q_int0 = zeros(DFloat, nelem)
+    Q_cumulative = 0
+    L2_error     = 0 
 	  @inbounds for e in elems
-		  for i = 1:Nq 
-			  Q_int0[i,e] = 0
-			for j = 1:Nq - 1
-				x = vgeo[i, j, _x, e]
-				MJ = vgeo[i, j, _MJ, e]
-				Q_int0[i,e] += MJ * x  # summed over vertical indices on element
-			end
-			Q_cumulative[i] =  sum(Q_int0[i,:])
-			@show(Q_cumulative[i])
-		  end 
+			  Q_int0[e] = 0
+			  for j = 1:Nq
+				  x = vgeo[j, _x, e]
+				  MJ = vgeo[j, _MJ, e]
+          @show(MJ)
+          Q_int0[e] += MJ * Q[j,1,e]  # summed over vertical indices on element
+			  end
+			  Q_cumulative =  sum(Q_int0)
 	  end
+    #Q_cumulative += vgeo[Nq, _MJ, nelem] * Q[Nq, 1, nelem]
 	  @show(Q_cumulative)
-    return Q_int0, Q_int1
+    #L2_error = sqrt((Q_cumulative-4/pi)^2/(abs(4/pi))^2)
+    #@show(L2_error)
 end
 
 function driver(::Val{dim}, ::Val{N}, mpicomm, ic, mesh, tend,
@@ -140,9 +138,9 @@ function driver(::Val{dim}, ::Val{N}, mpicomm, ic, mesh, tend,
 
     @inbounds for e = 1:nelem, i = 1:(N+1)^dim
         x = vgeo[i, _x, e]
-        r,rint = ic(x)
-        Q[i, 1, e] = x
-        Q[i, 2, e] = x
+        r = ic(x)
+        Q[i, 1, e] = 1#cospi(x/2)
+        Q[i, 2, e] = 0 
         Q[i, 3, e] = 0 
     end
 	
@@ -152,9 +150,9 @@ end
 function main()
     
     DFloat = Float64
-    dim = 2
-    N=2
-    Ne=2
+    dim = 1
+    N = 5
+    Ne= 1
     visc=0.01
     iplot=10
     icase=10
@@ -171,18 +169,15 @@ function main()
     
     function ic(x...)
         r = x[1] # Linear test function with quadratic integral
-	rint = x[1]^2
-        r,rint
+        return r
     end
-    error("ic initialised")
     # Aperiodic boundary conditions
     periodic = (false,)
     # No advection terms
     advection = false
     # Generate mesh
-    mesh = brickmesh(range(DFloat(0); length=Ne+1, stop=pi),
-		     range(DFloat(0); length=Ne+1, stop=pi), 
-		     periodic; part=mpirank + 1, numparts=mpisize)
+    mesh = brickmesh((range(DFloat(-1); length=Ne +1, stop=1),),
+                     periodic; part= mpirank + 1, numparts=mpisize)
     # Print run message
     mpirank == 0 && println("Running (CPU)...")
     # Return/store state vector Q obtained from expression in driver()
@@ -194,3 +189,4 @@ function main()
     return Q
 end
 
+main()

@@ -193,6 +193,7 @@ function computegeometry(::Val{dim}, mesh, D, ξ, ω, meshwarp, vmapM) where dim
 
     (ξx, ηx, ξy, ηy, MJ, MJI, x, y) =
         ntuple(j->(@view vgeo[:, j, :]), _nvgeo)
+
     J = similar(x)
     (nx, ny, sMJ, vMJI) = ntuple(j->(@view sgeo[ j, :, :, :]), _nsgeo)
     sJ = similar(sMJ)
@@ -215,7 +216,7 @@ function computegeometry(::Val{dim}, mesh, D, ξ, ω, meshwarp, vmapM) where dim
     sM = dim > 1 ? kron(1, ntuple(j->ω, dim-1)...) : one(DFloat)
     sMJ .= sM .* sJ
 
-    (vgeo, sgeo)
+    (vgeo, sgeo, J, MJ)
 end
 # }}}
 
@@ -1993,12 +1994,13 @@ function nse(::Val{dim}, ::Val{N}, mpicomm, ic, mesh, tend, iplot, visc;
 
     # Compute the geometry
     mpirank == 0 && println("[CPU] computing metrics...")
-    (vgeo, sgeo) = computegeometry(Val(dim), mesh, D, ξ, ω, meshwarp, vmapM)
+    (vgeo, sgeo, J, MJ) = computegeometry(Val(dim), mesh, D, ξ, ω, meshwarp, vmapM)
     (nface, nelem) = size(mesh.elemtoelem)
 
     # Storage for the solution, rhs, and error
     mpirank == 0 && println("[CPU] creating fields (CPU)...")
     Q = zeros(DFloat, (N+1)^dim, _nstate, nelem)
+    @show(ω, J, MJ)
     rhs = zeros(DFloat, (N+1)^dim, _nstate, nelem)
 
     # setup the initial condition
@@ -2129,8 +2131,8 @@ function main()
     #Input Parameters
     time_final = DFloat(10.0)
     iplot=100
-    Ne = 10
-    N  = 4
+    Ne = 1
+    N  = 5
     visc = 2.0
     dim = 2
     hardware="cpu"
@@ -2139,9 +2141,9 @@ function main()
     end
 
     #Mesh Generation
-    mesh2D = brickmesh((range(DFloat(0); length=Ne+1, stop=1000),
-                        range(DFloat(0); length=Ne+1, stop=1000)),
-                       (true, false),
+    mesh2D = brickmesh((range(DFloat(-1); length=Ne+1, stop=1),
+                        range(DFloat(-1); length=Ne+1, stop=1)),
+                       (true, true),
                        part=mpirank+1, numparts=mpisize)
 
     #Call Solver

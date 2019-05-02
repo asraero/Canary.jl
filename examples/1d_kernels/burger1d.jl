@@ -69,8 +69,10 @@
 #
 #--------------------------------Markdown Language Header-----------------------
 include(joinpath(@__DIR__,"vtk.jl"))
+include(joinpath(@__DIR__,"../../src/Canary.jl"))
 using MPI
-using Canary
+using ..Canary
+using Plots
 using Printf: @sprintf
 const HAVE_CUDA = try
     using CUDAnative
@@ -788,8 +790,8 @@ function lowstorageRK(::Val{dim}, ::Val{N}, mesh, vgeo, sgeo, Q, rhs, D,
             end
 
             # update solution and scale RHS
-            updatesolution!(Val(dim), Val(N), d_rhsL, d_rhs_gradQL, d_QL, d_vgeoL, mesh.realelems,
-                            RKA[s%length(RKA)+1], RKB[s], dt, visc)
+            #updatesolution!(Val(dim), Val(N), d_rhsL, d_rhs_gradQL, d_QL, d_vgeoL, mesh.realelems,
+             #               RKA[s%length(RKA)+1], RKB[s], dt, visc)
         end
 
         if step == 1
@@ -862,59 +864,18 @@ function burger(::Val{dim}, ::Val{N}, mpicomm, ic, mesh, tend, visc;
         x = vgeo[i, _x, e]
         U = ic(x)
         Q[i, _U, e] = U
-        Qexact[i, _U, e] = U
+	Qexact[i, _U, e] = x^2 / 2
     end
-
     # Compute time step
-    mpirank == 0 && println("[CPU] computing dt (CPU)...")
     (base_dt,Courant) = courantnumber(Val(dim), Val(N), vgeo, Q, mpicomm)
-    mpirank == 0 && @show (base_dt,Courant)
 
     nsteps = ceil(Int64, tend / base_dt)
     dt = tend / nsteps
-    mpirank == 0 && @show (dt, nsteps, dt * nsteps, tend)
-
-    # Do time stepping
-    stats = zeros(DFloat, 3)
-    mpirank == 0 && println("[CPU] computing initial energy...")
-    stats[1] = L2energysquared(Val(dim), Val(N), Q, vgeo, mesh.realelems)
-
-    # plot initial condition
-    mkpath("viz")
-    X = ntuple(j->reshape((@view vgeo[:, _x+j-1, :]), ntuple(j->N+1,dim)...,
-                          nelem), dim)
-    U = reshape((@view Q[:, _U, :]), ntuple(j->(N+1),dim)..., nelem)
-    writemesh(@sprintf("viz/burger%dD_%s_rank_%04d_step_%05d",
-                       dim, ArrType, mpirank, 0), X...;
-              fields=(("h", U),("U",U)),realelems=mesh.realelems)
-
     #Call Time-stepping Routine
     mpirank == 0 && println("[DEV] starting time stepper...")
     lowstorageRK(Val(dim), Val(N), mesh, vgeo, sgeo, Q, rhs, D, dt, nsteps, tout,
                  vmapM, vmapP, mpicomm, visc;
                  ArrType=ArrType, plotstep=plotstep)
-
-    # plot final solution
-    X = ntuple(j->reshape((@view vgeo[:, _x+j-1, :]), ntuple(j->N+1,dim)...,
-                          nelem), dim)
-    U = reshape((@view Q[:, _U, :]), ntuple(j->(N+1),dim)..., nelem)
-    writemesh(@sprintf("viz/burger%dD_%s_rank_%04d_step_%05d",
-                       dim, ArrType, mpirank, nsteps), X...;
-              fields=(("h", U),("U",U)),realelems=mesh.realelems)
-
-    mpirank == 0 && println("[CPU] computing final energy...")
-    stats[2] = L2energysquared(Val(dim), Val(N), Q, vgeo, mesh.realelems)
-    stats[3] = L2errorsquared(Val(dim), Val(N), Q, vgeo, mesh.realelems, Qexact,
-                              tend)
-
-    stats = sqrt.(MPI.allreduce(stats, MPI.SUM, mpicomm))
-
-    if  mpirank == 0
-        @show eng0 = stats[1]
-        @show engf = stats[2]
-        @show Δeng = engf - eng0
-        @show err = stats[3]
-    end
 end
 # }}}
 
@@ -943,27 +904,18 @@ function main()
 
     #Initial Conditions
     function ic(x...)
-        U = sin( π*x[1] ) + 0.01
+	    U = x[1]
     end
-    periodic = (true, )
+    periodic = (false, )
 
     mesh = brickmesh((range(DFloat(0); length=Ne+1, stop=2),), periodic; part=mpirank+1, numparts=mpisize)
 
-    if hardware == "cpu"
         mpirank == 0 && println("Running (CPU)...")
-        burger(Val(1), Val(N), mpicomm, ic, mesh, time_final, visc;
+        Q = burger(Val(1), Val(N), mpicomm, ic, mesh, time_final, visc;
                ArrType=Array, tout = 10, plotstep = iplot)
         mpirank == 0 && println()
-    elseif hardware == "gpu"
-        @hascuda begin
-            mpirank == 0 && println("Running (GPU)...")
-            burger(Val(1), Val(N), mpicomm, ic, mesh, time_final, visc;
-                   ArrType=CuArray, tout = 10, plotstep = iplot)
-            mpirank == 0 && println()
-        end
-    end
-    nothing
+return Q 
 end
 # }}}
 
-main()
+@show(Q)

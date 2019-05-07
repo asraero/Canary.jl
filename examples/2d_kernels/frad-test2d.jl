@@ -34,7 +34,7 @@ end
 end
 # }}}
 
-const _nstate = 4
+const _nstate = 1
 const _nvgeo = 9
 const _ξx, _ηx, _ξy, _ηy, _MJ, _MJI, _ωJ, _x, _y = 1:_nvgeo
 const vgeoid = (ξx = _ξx, ηx = _ηx,
@@ -73,64 +73,51 @@ function computegeometry(::Val{dim}, mesh, D, ξ, ω, meshwarp, vmapM) where dim
 end
 # }}}
       
-function vertint_flux!(::Val{dim}, ::Val{N}, ::Val{horsize}, Q, vgeo, sgeo, elems, vmapM, vmapP, J, D, mesh) where {dim, N, horsize} 
-  
- #Np = (N+1)^dim
-  Nfp = (N+1)^(dim-1)
- #nface = 2*dim
-  f = 1
-  ibot = 0 
-  botelems = zeros(eltype(horsize), horsize)
-  @inbounds for e in elems
-    if (e == mesh.elemtoelem[3,e]) # If it is its own bottom neighbour , move on
-        ibot += 1
-        botelems[ibot] = e
-    end
-  end
-  @show(botelems)
-  vcol = 0 
+# Simple unit test to demo 1-d integration operator using Canary quadrature
+# functions.  
+function vertint!(::Val{dim}, ::Val{N}, ::Val{Ne_x}, ::Val{Ne_y}, Q, vgeo, J, D, elems, ω) where {dim, N, Ne_x, Ne_y}
+    
+    DFloat = eltype(Q)
+    
+    Nq = N + 1
+    nelem = size(Q)[end]
 
-  Ne_vert = Int64(length(elems) / horsize)
-  vert_col = zeros(eltype(botelems), horsize, Ne_vert)
-  ibot = 0 
-  @inbounds for ebot in botelems
-    ibot += 1
-    # Assuming non-periodic conditions for the top, bottom
-    # We use the list of bottom elements to then find the 
-    # elements `stacked` vertically
-    local_e = ebot
-    elemind = 1 
-    vert_col[ibot, elemind] = ebot
-    while (local_e != mesh.elemtoelem[4,local_e] ) 
-      elemind += 1
-      vert_col[ibot, elemind] = mesh.elemtoelem[4,local_e] 
-      local_e = mesh.elemtoelem[4, local_e]
+    vgeo = reshape(vgeo, Nq, Nq, _nvgeo, Ne_x, Ne_y)
+    # single state vector 
+    Q = reshape(Q, Nq, Nq, 1, Ne_x, Ne_y)
+      
+    Q_int0 = zeros(DFloat, Nq, Nq, Ne_x, Ne_y)
+    Q_cumulative = zeros(DFloat, Nq, Nq, Ne_x,Ne_y)
+    Q_temp = zeros(DFloat, Nq, Ne_x, Ne_y)
+    Q_red = zeros(DFloat, Nq, Ne_x)
+    
+    (ξ,ω) = lglpoints(DFloat, N)
+    D2 = spectralderivative(ξ)
+    J2 = D2 * ξ
+    ωJ = ω .* J2 # J == J2 and D == D2 (here we explicitly
+    # calculate for debugging / checks) 
+
+    @inbounds for ex = 1:Ne_x
+      @inbounds for ey = 1:Ne_y #Do we need the element ID at all 
+        @inbounds for i = 1:Nq
+			    @inbounds for j = 1:Nq
+            y = vgeo[i, j, _y, ex, ey]
+            # f is the test function 
+            f = sin(y) + cos(y).^2  
+            Q_int0[i, j, ex, ey] = ωJ[j] * f  
+          end
+          Q_temp = sum(Q_int0,dims=2)
+	      end
+      end  
+      Q_red = sum(Q_temp,dims=3)
     end
-  end
-  
-  @inbounds for ibot = 1:length(botelems)
-    elem_list = vert_col[ibot,:]
-    Q_int = 0
-    # Note that this assumes a structured grid 
-    # Parallel sides (vertical / horizontal) so that the surface metrics can 
-    # be assumed constant across all element nodes
-    @inbounds for e = 1:length(elem_list)
-      faceid = mesh.elemtoelem[4,e]
-        for n = 1:Nfp
-          sMJ = sgeo[_sMJ, n, f, e]
-          Q_int +=  sMJ 
-        end
-     end
-        @show(Q_int)
-        @show(elem_list)
-    end
+    @show(Q_red, Q_temp) 
 end
 
-  
 
-function driver(::Val{dim}, ::Val{N}, ::Val{horsize}, mpicomm, mesh, tend,
+function driver(::Val{dim}, ::Val{N}, ::Val{Ne_x}, ::Val{Ne_y}, mpicomm, mesh, tend,
              advection, visc; meshwarp=(x...)->identity(x), tout = 60, ArrType=Array,
-             plotstep=0) where {dim, N, horsize}
+             plotstep=0) where {dim, N, Ne_x, Ne_y}
 
     DFloat = typeof(tend)
 
@@ -163,17 +150,17 @@ function driver(::Val{dim}, ::Val{N}, ::Val{horsize}, mpicomm, mesh, tend,
         y = vgeo[i,_y, e]
         Q[i,1, e] = 1 #cospi(y/2)
     end
-    vertint_flux!(Val(dim), Val(N), Val(horsize), Q, vgeo, sgeo, mesh.realelems, vmapM, vmapP, J, D, mesh)
-    #vertint2_flux!(Val(dim), Val(N), Val(horsize), Q, vgeo, sgeo, mesh.realelems, vmapM, vmapP, J, D)
+    vertint!(Val(dim), Val(N), Val(Ne_x), Val(Ne_y), Q, vgeo, J, D, mesh.realelems, ω)
 end
 
 function main()
     
     DFloat = Float64
     dim = 2
-    N = 2
-    Ne= (100,100)
-    horsize = Ne[1]
+    N = 10
+    Ne= (1,1)
+    Ne_x = Ne[1]
+    Ne_y = Ne[2]
     visc=0.01
     iplot=10
     icase=10
@@ -193,8 +180,8 @@ function main()
     # No advection terms
     advection = false
     # Generate mesh
-    mesh = brickmesh((range(DFloat(-1); length=Ne[1]+1, stop=1),
-                      range(DFloat(-1); length=Ne[2]+1, stop=1)), 
+    mesh = brickmesh((range(DFloat(0); length=Ne[1]+1, stop=pi),
+                      range(DFloat(0); length=Ne[2]+1, stop=pi)), 
 		                  periodic; 
                       part=mpirank + 1, 
                       numparts=mpisize)
@@ -202,7 +189,7 @@ function main()
     # Print run message
     mpirank == 0 && println("Running (CPU)...")
     # Return/store state vector Q obtained from expression in driver()
-    Q = driver(Val(dim), Val(N), Val(horsize), mpicomm, mesh, time_final,advection, visc;
+    Q = driver(Val(dim), Val(N), Val(Ne_x), Val(Ne_y), mpicomm, mesh, time_final,advection, visc;
         ArrType=Array, tout = 10, plotstep = iplot)
     # Check mpirank and print successful completion message
     mpirank == 0 && println("Completed (CPU)")

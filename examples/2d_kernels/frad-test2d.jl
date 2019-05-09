@@ -62,56 +62,60 @@ function computegeometry(::Val{dim}, mesh, D, ξ, ω, meshwarp, vmapM) where dim
     creategrid!(X..., mesh.elemtocoord, ξ)
     # Compute the metric terms
     computemetric!(x, y, J, ξx, ηx, ξy, ηy, sJ, nx, ny, D)
+    @show(sJ)
+    @show(size(sJ))
+    
     M = kron(1, ntuple(j->ω, dim)...)
     MJ .= M .* J
     MJI .= 1 ./ MJ
     vMJI .= MJI[vmapM]
     sM = dim > 1 ? kron(1, ntuple(j->ω, dim-1)...) : one(DFloat)
     sMJ .= sM .* sJ
-    (vgeo, sgeo, J, MJ, M, sMJ)
+    (vgeo, sgeo, J, MJ, M, sMJ, sJ)
 
 end
 # }}}
       
-# Simple unit test to demo 1-d integration operator using Canary quadrature
+# Simple unit test to demo 2-d integration operator using Canary quadrature
 # functions.  
-function vertint!(::Val{dim}, ::Val{N}, ::Val{Ne_x}, ::Val{Ne_y}, Q, vgeo, J, D, elems, ω) where {dim, N, Ne_x, Ne_y}
+function vertint!(::Val{dim}, ::Val{N}, ::Val{Ne_x}, ::Val{Ne_y}, vgeo, J, sJ, D, elems, ω, sMJ) where {dim, N, Ne_x, Ne_y}
     
-    DFloat = eltype(Q)
-    
-    Nq = N + 1
-    nelem = size(Q)[end]
+  DFloat = eltype(vgeo)
+  Nq = N + 1
 
-    vgeo = reshape(vgeo, Nq, Nq, _nvgeo, Ne_x, Ne_y)
-    # single state vector 
-    Q = reshape(Q, Nq, Nq, 1, Ne_x, Ne_y)
-      
-    Q_int0 = zeros(DFloat, Nq, Nq, Ne_x, Ne_y)
-    Q_cumulative = zeros(DFloat, Nq, Nq, Ne_x,Ne_y)
-    Q_temp = zeros(DFloat, Nq, Ne_x, Ne_y)
-    Q_red = zeros(DFloat, Nq, Ne_x)
-    
-    (ξ,ω) = lglpoints(DFloat, N)
-    D2 = spectralderivative(ξ)
-    J2 = D2 * ξ
-    ωJ = ω .* J2 # J == J2 and D == D2 (here we explicitly
-    # calculate for debugging / checks) 
-
-    @inbounds for ex = 1:Ne_x
-      @inbounds for ey = 1:Ne_y #Do we need the element ID at all 
-        @inbounds for i = 1:Nq
-			    @inbounds for j = 1:Nq
-            y = vgeo[i, j, _y, ex, ey]
-            # f is the test function 
-            f = sin(y) + cos(y).^2  
-            Q_int0[i, j, ex, ey] = ωJ[j] * f  
-          end
-          Q_temp = sum(Q_int0,dims=2)
-	      end
-      end  
-      Q_red = sum(Q_temp,dims=3)
+  vgeo = reshape(vgeo, Nq, Nq, _nvgeo, Ne_x, Ne_y)
+  QI = zeros(DFloat, Nq, Nq, Ne_x, Ne_y)
+  
+  (ξ,ω) = lglpoints(DFloat, N)
+  D = spectralderivative(ξ)
+  # calculate for debugging / checks)  
+  @inbounds for ex = 1:Ne_x, ey = 1:Ne_y 
+    # along vertical elems on a stack
+    @inbounds for i = 1:Nq # along horizontal nodes
+      # By setting the loop extent to 1 we go along one single vertical node stack
+      y = vgeo[i, :, _y, ex, ey]
+      J = D * y
+      @inbounds for j = 1:Nq # along vertical nodes
+        # f is the test function 
+        x = vgeo[i, j, _x, ex, ey]
+        f = sin(y[j]) + cos(y[j])^2 
+        QI[i, j, ex, ey] = f * ω[j] * J[j] 
+      end
+      QI0, QI1, QI2 = 0, 0, 0
+      @inbounds for ey = 1:Ne_y, j = 1:Nq
+        y = vgeo[i, j, _y, ex, ey]
+        QI0 += QI[i, j, ex, ey] 
+        if y <= 1  
+          # Subset of vertical domain integral
+          # Only compute for ∫f dy from [0, 1]
+          QI1 += QI[i, j, ex, ey] 
+        end
+      end
+      QI2 = QI0 - QI1
+      @show(QI0, QI1, QI2)
     end
-    @show(Q_red, Q_temp) 
+  end
+
 end
 
 
@@ -140,9 +144,8 @@ function driver(::Val{dim}, ::Val{N}, ::Val{Ne_x}, ::Val{Ne_y}, mpicomm, mesh, t
     (ξ, ω) = lglpoints(DFloat, N)
     (vmapM, vmapP) = mappings(N, mesh.elemtoelem, mesh.elemtoface, mesh.elemtoordr)
     D = spectralderivative(ξ)
-    (vgeo, sgeo, J, MJ, sMJ) = computegeometry(Val(dim), mesh, D, ξ, ω, meshwarp, vmapM)
+    (vgeo, sgeo, J, MJ, sMJ, sJ) = computegeometry(Val(dim), mesh, D, ξ, ω, meshwarp, vmapM)
     (nface, nelem) = size(mesh.elemtoelem)
-    
     Q = zeros(DFloat, (N+1)^dim, _nstate, nelem)
 
     @inbounds for e = 1:nelem, i = 1:(N+1)^dim, 
@@ -150,7 +153,7 @@ function driver(::Val{dim}, ::Val{N}, ::Val{Ne_x}, ::Val{Ne_y}, mpicomm, mesh, t
         y = vgeo[i,_y, e]
         Q[i,1, e] = 1 #cospi(y/2)
     end
-    vertint!(Val(dim), Val(N), Val(Ne_x), Val(Ne_y), Q, vgeo, J, D, mesh.realelems, ω)
+    vertint!(Val(dim), Val(N), Val(Ne_x), Val(Ne_y), vgeo, J, sJ, D, mesh.realelems, ω, sMJ)
 end
 
 function main()
@@ -158,7 +161,10 @@ function main()
     DFloat = Float64
     dim = 2
     N = 10
-    Ne= (1,1)
+    #Ne= (1,1) 
+    #Ne= (1,2) 
+    #Ne= (2,1)
+    Ne= (2,2) 
     Ne_x = Ne[1]
     Ne_y = Ne[2]
     visc=0.01
@@ -180,8 +186,10 @@ function main()
     # No advection terms
     advection = false
     # Generate mesh
-    mesh = brickmesh((range(DFloat(0); length=Ne[1]+1, stop=pi),
-                      range(DFloat(0); length=Ne[2]+1, stop=pi)), 
+    x0, x1 = 0 , π
+    y0, y1 = 0 , π
+    mesh = brickmesh((range(DFloat(x0); length=Ne[1]+1, stop=x1),
+                      range(DFloat(y0); length=Ne[2]+1, stop=y1)), 
 		                  periodic; 
                       part=mpirank + 1, 
                       numparts=mpisize)

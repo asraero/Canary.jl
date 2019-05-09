@@ -34,6 +34,7 @@ end
 end
 # }}}
 
+const _nstate = 1
 const _nvgeo = 14
 const _ξx, _ηx, _ζx, _ξy, _ηy, _ζy, _ξz, _ηz, _ζz, _MJ, _MJI,
 _x, _y, _z = 1:_nvgeo
@@ -74,46 +75,42 @@ function computegeometry(::Val{dim}, mesh, D, ξ, ω, meshwarp, vmapM) where dim
     vMJI .= MJI[vmapM]
     sM = dim > 1 ? kron(1, ntuple(j->ω, dim-1)...) : one(DFloat)
     sMJ .= sM .* sJ
-    (vgeo, sgeo, J, MJ, M, sMJ)
+    (vgeo, sgeo, J, MJ, M, sMJ, sJ)
 
 end
 # }}}
       
-function vertint_flux!(::Val{dim}, ::Val{N}, Q, vgeo, sgeo, elems, vmapM, vmapP, J, D)where {dim, N}
-```
-Single column integral of arbitrary function 
-Currently ∫f(x) dx in the DG is calculated using the weighted basis functions. 
-Care: in one dimension the weights are simply given by the MJ metric calculated in
-computemetric.jl (note the dependency on Canary.jl which will disappear once we fold the code
-into CliMA)
+function vertint_flux!(::Val{dim}, ::Val{N}, ::Val{Ne_x}, ::Val{Ne_y}, ::Val{Ne_z}, Q, vgeo, sgeo, elems, vmapM, vmapP, J, sJ, D)where {dim, N, Ne_x, Ne_y, Ne_z}
+  
+  DFloat = eltype(vgeo)
+  Nq = N+1
+  # 3D arrays
+  vgeo = reshape(vgeo, Nq, Nq, Nq, _nvgeo, Ne_x, Ne_y, Ne_z)
+  QI = zeros(DFloat, Nq, Nq, Nq, Ne_x, Ne_y, Ne_z)
+  (ξ,ω) = lglpoints(DFloat, N)
+  D = spectralderivative(ξ)
+  @inbounds for ex = 1:Ne_x, ey=1:Ne_y, ez=1:Ne_z
+    @inbounds for i = 1:Nq, j = 1:Nq
+         z = vgeo[i, j, :, _z, ex, ey, ez]
+         J = D * z 
+         @inbounds for k = 1:Nq
+            x = vgeo[i, j, k, _x, ex, ey, ez]
+            f = sin(z[k]) + cos(z[k])^2 
+            QI[i, j, k, ex, ey, ez] = f * ω[k] * J[k]
+         end
+         QI0 = 0
+         @inbounds for ez = 1:Ne_z
+           @inbounds for k = 1:Nq
+             QI0 += QI[i, j, k, ex, ey, ez]
+           end
+         end
+         @show(QI0)
+    end
+  end
 
-Q in the argument can be replaced with any field for which the integral is required
-```
-  Q_int = 0 
-  Np = (N+1)^dim
-  Nfp = (N+1)^(dim-1)
-  nface = 2*dim
-  f = 1
-  @inbounds for e in elems
-            for n = 1:Nfp
-              sMJ = sgeo[_sMJ, n, f, e]
-              
-              idM, idP = vmapM[n, f, e], 
-                         vmapP[n, f, e]
-              eM, eP = e, 
-                       ((idP - 1) ÷ Np) + 1
-              
-              vidM, vidP = ((idM - 1) % Np) + 1,  
-                           ((idP - 1) % Np) + 1
-                           Q_int += sMJ * Q[vidM, 1, eM]
-            end
-        @show(Q_int)
-   end
 end
 
-function driver(::Val{dim}, ::Val{N}, mpicomm, mesh, tend,
-             advection, visc; meshwarp=(x...)->identity(x), tout = 60, ArrType=Array,
-             plotstep=0) where {dim, N}
+function driver(::Val{dim}, ::Val{N}, ::Val{Ne_x}, ::Val{Ne_y}, ::Val{Ne_z}, mpicomm, mesh, tend, advection, visc; meshwarp=(x...)->identity(x), tout = 60, ArrType=Array, plotstep=0) where {dim, N, Ne_x, Ne_y, Ne_z}
 
     DFloat = typeof(tend)
 
@@ -136,7 +133,7 @@ function driver(::Val{dim}, ::Val{N}, mpicomm, mesh, tend,
     (ξ, ω) = lglpoints(DFloat, N)
     (vmapM, vmapP) = mappings(N, mesh.elemtoelem, mesh.elemtoface, mesh.elemtoordr)
     D = spectralderivative(ξ)
-    (vgeo, sgeo, J, MJ, sMJ) = computegeometry(Val(dim), mesh, D, ξ, ω, meshwarp, vmapM)
+    (vgeo, sgeo, J, MJ, sMJ, sJ) = computegeometry(Val(dim), mesh, D, ξ, ω, meshwarp, vmapM)
     (nface, nelem) = size(mesh.elemtoelem)
         
     Q = zeros(DFloat, (N+1)^dim, _nstate, nelem)
@@ -145,19 +142,19 @@ function driver(::Val{dim}, ::Val{N}, mpicomm, mesh, tend,
         x = vgeo[i,_x, e]
         y = vgeo[i,_y, e]
         Q[i,1, e] = 1#cospi(y/2)
-        Q[i,2, e] = x
-        Q[i,3, e] = 0
-        Q[i,4, e] = sin(x)
     end
-  vertint_flux!(Val(dim), Val(N), Q, vgeo, sgeo, mesh.realelems, vmapM, vmapP, J, D)
+    vertint_flux!(Val(dim), Val(N), Val(Ne_x), Val(Ne_y), Val(Ne_z), Q, vgeo, sgeo, mesh.realelems, vmapM, vmapP, J, sJ, D)
 end
 
 function main()
     
     DFloat = Float64
-    dim = 2
-    N=2
-    Ne= (1,3)
+    dim = 3
+    N=10
+    Ne= (1,1,2) 
+    Ne_x = Ne[1]
+    Ne_y = Ne[2]
+    Ne_z = Ne[3]
     visc=0.01
     iplot=10
     icase=10
@@ -173,12 +170,16 @@ function main()
     mpisize = MPI.Comm_size(mpicomm)
     
     # Aperiodic boundary conditions
-    periodic = (true,false)
+    periodic = (false,false,false)
     # No advection terms
     advection = false
     # Generate mesh
-    mesh = brickmesh((range(DFloat(-1); length=Ne[1]+1, stop=1),
-                      range(DFloat(-1); length=Ne[2]+1, stop=1)), 
+    x0, x1 = 0, π
+    y0, y1 = 0, π
+    z0, z1 = 0, π
+    mesh = brickmesh((range(DFloat(x0); length=Ne[1]+1, stop=x1),
+                      range(DFloat(y0); length=Ne[2]+1, stop=y1),
+                      range(DFloat(z0); length=Ne[3]+1, stop=z1)),
 		                  periodic; 
                       part=mpirank + 1, 
                       numparts=mpisize)
@@ -186,7 +187,7 @@ function main()
     # Print run message
     mpirank == 0 && println("Running (CPU)...")
     # Return/store state vector Q obtained from expression in driver()
-    Q = driver(Val(dim), Val(N), mpicomm, mesh, time_final,advection, visc;
+    Q = driver(Val(dim), Val(N), Val(Ne_x), Val(Ne_y), Val(Ne_z), mpicomm, mesh, time_final,advection, visc;
         ArrType=Array, tout = 10, plotstep = iplot)
     # Check mpirank and print successful completion message
     mpirank == 0 && println("Completed (CPU)")

@@ -69,6 +69,7 @@ function computegeometry(::Val{dim}, mesh, D, ξ, ω, meshwarp, vmapM) where dim
 
     # Compute the metric terms
     computemetric!(x, J, ξx, sJ, nx, D)
+    @show(sJ)
     M = kron(1, ntuple(j->ω, dim)...)
     MJ .= M .* J
     MJI .= 1 ./ MJ
@@ -79,30 +80,34 @@ function computegeometry(::Val{dim}, mesh, D, ξ, ω, meshwarp, vmapM) where dim
 
 end
 # }}}
-      
+     
+# Simple unit test to demo 1-d integration operator using Canary quadrature
+# functions.  
 function vertint!(::Val{dim}, ::Val{N}, Q, vgeo, J, D, elems, ω) where {dim, N}
     DFloat = eltype(Q)
     Nq = size(D, 1)
     nelem = size(Q)[end]
     vgeo = reshape(vgeo, Nq, _nvgeo, nelem)
     Q = reshape(Q, Nq, 3, nelem)
-    Q_int0 = zeros(DFloat, nelem)
+    Q_int0 = zeros(DFloat, Nq, nelem)
     Q_cumulative = 0
     L2_error     = 0 
+    (ξ,ω) = lglpoints(DFloat, N)
+    D2 = spectralderivative(ξ)
 	  @inbounds for e in elems
 			  Q_int0[e] = 0
 			  for j = 1:Nq
 				  x = vgeo[j, _x, e]
-				  MJ = vgeo[j, _MJ, e]
-          @show(MJ)
-          Q_int0[e] += MJ * Q[j,1,e]  # summed over vertical indices on element
+          # f is the test function (arbitrary here)
+          # true f is a function of the state Q[i,j,s,e]
+          f = sin(x) + cos(x).^2  
+          J2 = D2 * ξ
+          ωJ = ω .* J
+          Q_int0[j, e] = ωJ[j] * f 
 			  end
-			  Q_cumulative =  sum(Q_int0)
+        Q_cumulative =  sum(Q_int0)
 	  end
-    #Q_cumulative += vgeo[Nq, _MJ, nelem] * Q[Nq, 1, nelem]
 	  @show(Q_cumulative)
-    #L2_error = sqrt((Q_cumulative-4/pi)^2/(abs(4/pi))^2)
-    #@show(L2_error)
 end
 
 function driver(::Val{dim}, ::Val{N}, mpicomm, ic, mesh, tend,
@@ -134,7 +139,6 @@ function driver(::Val{dim}, ::Val{N}, mpicomm, ic, mesh, tend,
     (nface, nelem) = size(mesh.elemtoelem)
         
     Q = zeros(DFloat, (N+1)^dim, _nstate, nelem)
-    @show(ω, J ) # LGL point weights
 
     @inbounds for e = 1:nelem, i = 1:(N+1)^dim
         x = vgeo[i, _x, e]
@@ -151,7 +155,7 @@ function main()
     
     DFloat = Float64
     dim = 1
-    N = 5
+    N = 100
     Ne= 1
     visc=0.01
     iplot=10
@@ -176,7 +180,7 @@ function main()
     # No advection terms
     advection = false
     # Generate mesh
-    mesh = brickmesh((range(DFloat(-1); length=Ne +1, stop=1),),
+    mesh = brickmesh((range(DFloat(0); length=Ne +1, stop=pi),),
                      periodic; part= mpirank + 1, numparts=mpisize)
     # Print run message
     mpirank == 0 && println("Running (CPU)...")
